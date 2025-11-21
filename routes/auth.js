@@ -1,3 +1,4 @@
+// backend/routes/auth.js
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
@@ -6,21 +7,40 @@ const { validateEmail, validatePassword, rateLimiter } = require('../middleware/
 
 const router = express.Router();
 
-// Generate JWT Token
+const isProd = process.env.NODE_ENV === 'production';
+
+// Helper: generate JWT
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRE
+    expiresIn: process.env.JWT_EXPIRE || '30d'
   });
+};
+
+// Helper: common cookie options
+const getCookieOptions = () => ({
+  httpOnly: true,
+  secure: isProd,                     // true on Render (HTTPS)
+  sameSite: isProd ? 'none' : 'lax', // 'none' for cross-site (Vercel <-> Render)
+  maxAge: 30 * 24 * 60 * 60 * 1000,  // 30 days
+  path: '/',                         // send for all routes
+});
+
+// Helper: set auth cookie
+const setAuthCookie = (res, token) => {
+  res.cookie('token', token, getCookieOptions());
 };
 
 // Register
 router.post('/register', validateEmail, validatePassword, async (req, res) => {
   try {
-    const { name, email, password, role } = req.body;
+    let { name, email, password, role } = req.body;
 
     if (!name || name.trim().length < 2) {
       return res.status(400).json({ message: 'Name must be at least 2 characters long' });
     }
+
+    name = name.trim();
+    email = String(email || '').trim().toLowerCase();
 
     // Check if user exists
     const existingUser = await User.findOne({ email });
@@ -37,16 +57,9 @@ router.post('/register', validateEmail, validatePassword, async (req, res) => {
     });
 
     const token = generateToken(user._id);
+    setAuthCookie(res, token);
 
-    // Set HTTP-only cookie
-    res.cookie('token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
-    });
-
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       user: {
         id: user._id,
@@ -56,18 +69,21 @@ router.post('/register', validateEmail, validatePassword, async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(400).json({ message: error.message });
+    console.error('POST /auth/register error:', error);
+    return res.status(400).json({ message: error.message || 'Registration failed' });
   }
 });
 
 // Login
 router.post('/login', rateLimiter, validateEmail, async (req, res) => {
   try {
-    const { email, password } = req.body;
+    let { email, password } = req.body;
 
     if (!email || !password) {
       return res.status(400).json({ message: 'Please provide email and password' });
     }
+
+    email = String(email).trim().toLowerCase();
 
     const user = await User.findOne({ email }).select('+password');
 
@@ -76,16 +92,9 @@ router.post('/login', rateLimiter, validateEmail, async (req, res) => {
     }
 
     const token = generateToken(user._id);
+    setAuthCookie(res, token);
 
-    // Set HTTP-only cookie
-    res.cookie('token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
-    });
-
-    res.json({
+    return res.json({
       success: true,
       user: {
         id: user._id,
@@ -95,13 +104,14 @@ router.post('/login', rateLimiter, validateEmail, async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(400).json({ message: error.message });
+    console.error('POST /auth/login error:', error);
+    return res.status(400).json({ message: error.message || 'Login failed' });
   }
 });
 
 // Get current user
 router.get('/me', protect, async (req, res) => {
-  res.json({
+  return res.json({
     success: true,
     user: {
       id: req.user._id,
@@ -114,11 +124,14 @@ router.get('/me', protect, async (req, res) => {
 
 // Logout
 router.post('/logout', (req, res) => {
+  // Clear cookie using same options so browser actually removes it
   res.cookie('token', '', {
-    httpOnly: true,
+    ...getCookieOptions(),
+    maxAge: 0,
     expires: new Date(0)
   });
-  res.json({ success: true, message: 'Logged out successfully' });
+
+  return res.json({ success: true, message: 'Logged out successfully' });
 });
 
 module.exports = router;
