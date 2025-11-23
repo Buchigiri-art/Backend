@@ -1,4 +1,3 @@
-// backend/routes/auth.js
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
@@ -45,20 +44,28 @@ const generateToken = (id) => {
   
   return jwt.sign({ id }, JWT_SECRET, {
     expiresIn: JWT_EXPIRE,
-    issuer: 'your-app-name',
-    audience: 'your-app-domain'
+    issuer: 'quiz-app',
+    audience: 'quiz-app-users'
   });
 };
 
 // Helper: common cookie options
-const getCookieOptions = () => ({
-  httpOnly: true,
-  secure: IS_PROD,
-  sameSite: IS_PROD ? 'none' : 'lax',
-  maxAge: COOKIE_MAX_AGE,
-  path: '/',
-  domain: IS_PROD ? process.env.COOKIE_DOMAIN : undefined
-});
+const getCookieOptions = () => {
+  const options = {
+    httpOnly: true,
+    secure: IS_PROD,
+    sameSite: IS_PROD ? 'none' : 'lax',
+    maxAge: COOKIE_MAX_AGE,
+    path: '/',
+  };
+
+  // Only set domain in production for cross-domain cookies
+  if (IS_PROD && process.env.COOKIE_DOMAIN) {
+    options.domain = process.env.COOKIE_DOMAIN;
+  }
+
+  return options;
+};
 
 // Helper: set auth cookie
 const setAuthCookie = (res, token) => {
@@ -188,6 +195,15 @@ router.post('/logout', (req, res) => {
       message: 'Logged out successfully' 
     });
   }
+});
+
+// Check auth status (lightweight version of /me)
+router.get('/check', protect, (req, res) => {
+  return res.json({
+    success: true,
+    authenticated: true,
+    user: sanitizeUser(req.user)
+  });
 });
 
 // Health check endpoint
