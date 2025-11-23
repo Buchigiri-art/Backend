@@ -1,3 +1,4 @@
+// server/routes/students.js (or wherever this lives)
 const express = require('express');
 const Student = require('../models/Student');
 const { protect } = require('../middleware/auth');
@@ -27,6 +28,36 @@ router.post('/upload', protect, async (req, res) => {
     await Student.insertMany(studentsWithUser);
     
     res.json({ success: true, count: students.length });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+// ✅ Update student
+router.put('/:id', protect, async (req, res) => {
+  try {
+    const { name, usn, email, branch, year, semester } = req.body;
+
+    const update = { name, usn, email, branch, year, semester };
+
+    // remove undefined fields so we don't overwrite with undefined
+    Object.keys(update).forEach((key) => {
+      if (update[key] === undefined) {
+        delete update[key];
+      }
+    });
+
+    const student = await Student.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user._id },
+      update,
+      { new: true }
+    );
+
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    res.json(student);
   } catch (error) {
     res.status(400).json({ message: error.message });
   }
