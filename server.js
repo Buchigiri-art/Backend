@@ -1,54 +1,75 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const helmet = require('helmet');
-const compression = require('compression');
-const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 const cookieParser = require('cookie-parser');
 
 const { errorHandler, notFound } = require('./middleware/errorHandler');
 const { createIndexes } = require('./config/dbIndexes');
-const { requestLogger, errorLogger } = require('./middleware/logger');
 
 const app = express();
 
 /* -----------------------------------------------------
-   SECURITY & PERFORMANCE MIDDLEWARE
+   BASIC SECURITY HEADERS
 ------------------------------------------------------ */
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" },
-  contentSecurityPolicy: false // Configure properly in production
-}));
-
-app.use(compression());
-
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // Limit each IP to 1000 requests per windowMs
-  message: {
-    success: false,
-    message: 'Too many requests from this IP, please try again later.'
-  },
-  standardHeaders: true,
-  legacyHeaders: false
-});
-
-app.use(limiter);
-
-// More aggressive rate limiting for auth endpoints
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10, // 10 attempts per 15 minutes
-  message: {
-    success: false,
-    message: 'Too many authentication attempts, please try again later.'
-  }
+app.use((req, res, next) => {
+  // Basic security headers
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  next();
 });
 
 /* -----------------------------------------------------
-   CORS SETUP (supports multiple URLs)
+   SIMPLE RATE LIMITING
+------------------------------------------------------ */
+const rateLimitMap = new Map();
+
+const rateLimitMiddleware = (req, res, next) => {
+  const now = Date.now();
+  const windowMs = 15 * 60 * 1000; // 15 minutes
+  const maxRequests = 1000;
+  const ip = req.ip || req.connection.remoteAddress;
+
+  if (!rateLimitMap.has(ip)) {
+    rateLimitMap.set(ip, { count: 1, startTime: now });
+    return next();
+  }
+
+  const ipData = rateLimitMap.get(ip);
+  
+  if (now - ipData.startTime > windowMs) {
+    ipData.count = 1;
+    ipData.startTime = now;
+    return next();
+  }
+
+  if (ipData.count >= maxRequests) {
+    return res.status(429).json({
+      success: false,
+      message: 'Too many requests, please try again later.'
+    });
+  }
+
+  ipData.count++;
+  next();
+};
+
+// Clean up old entries every hour
+setInterval(() => {
+  const now = Date.now();
+  const windowMs = 15 * 60 * 1000;
+  for (const [ip, data] of rateLimitMap.entries()) {
+    if (now - data.startTime > windowMs) {
+      rateLimitMap.delete(ip);
+    }
+  }
+}, 60 * 60 * 1000);
+
+app.use(rateLimitMiddleware);
+
+/* -----------------------------------------------------
+   CORS SETUP
 ------------------------------------------------------ */
 const rawFrontendUrls = process.env.FRONTEND_URLS || 
   process.env.FRONTEND_URL || 
@@ -59,21 +80,10 @@ const allowedOrigins = rawFrontendUrls
   .map(url => url.trim().replace(/\/$/, ''))
   .filter(Boolean);
 
-// Add common development origins
-if (process.env.NODE_ENV === 'development') {
-  const devOrigins = ['http://localhost:3000', 'http://127.0.0.1:3000'];
-  devOrigins.forEach(origin => {
-    if (!allowedOrigins.includes(origin)) {
-      allowedOrigins.push(origin);
-    }
-  });
-}
-
 console.log('🌐 Allowed CORS origins:', allowedOrigins);
 
 const corsOptions = {
   origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, curl, etc.)
     if (!origin) return callback(null, true);
     
     const cleanOrigin = origin.replace(/\/$/, '');
@@ -82,7 +92,6 @@ const corsOptions = {
       return callback(null, true);
     }
 
-    // Log blocked origins in development
     if (process.env.NODE_ENV === 'development') {
       console.warn('⛔ Blocked CORS origin:', origin);
     }
@@ -91,19 +100,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: [
-    'Content-Type', 
-    'Authorization', 
-    'X-Requested-With', 
-    'Accept',
-    'X-API-Key'
-  ],
-  exposedHeaders: [
-    'X-RateLimit-Limit',
-    'X-RateLimit-Remaining',
-    'X-RateLimit-Reset'
-  ],
-  maxAge: 86400 // 24 hours
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
 };
 
 app.use(cors(corsOptions));
@@ -112,27 +109,26 @@ app.options('*', cors(corsOptions));
 /* -----------------------------------------------------
    BODY PARSING & COOKIE CONFIG
 ------------------------------------------------------ */
-app.use(express.json({ 
-  limit: '10mb',
-  verify: (req, res, buf) => {
-    req.rawBody = buf;
-  }
-}));
-
-app.use(express.urlencoded({ 
-  extended: true, 
-  limit: '10mb' 
-}));
-
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 
 /* -----------------------------------------------------
    REQUEST LOGGING
 ------------------------------------------------------ */
-app.use(requestLogger);
+app.use((req, res, next) => {
+  const start = Date.now();
+  
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.url} - ${res.statusCode} - ${duration}ms`);
+  });
+  
+  next();
+});
 
 /* -----------------------------------------------------
-   DATABASE CONNECTION WITH ENHANCED CONFIG
+   DATABASE CONNECTION (FIXED)
 ------------------------------------------------------ */
 const MONGODB_URI = process.env.MONGODB_URI;
 if (!MONGODB_URI) {
@@ -140,13 +136,15 @@ if (!MONGODB_URI) {
   process.exit(1);
 }
 
+// Fixed MongoDB connection options
 const mongooseOptions = {
   maxPoolSize: 10,
   serverSelectionTimeoutMS: 5000,
   socketTimeoutMS: 45000,
-  bufferCommands: false,
-  bufferMaxEntries: 0
+  // Remove deprecated options
 };
+
+console.log('🔗 Connecting to MongoDB...');
 
 mongoose.connect(MONGODB_URI, mongooseOptions)
   .then(async () => {
@@ -159,6 +157,7 @@ mongoose.connect(MONGODB_URI, mongooseOptions)
   })
   .catch((error) => {
     console.error('❌ MongoDB connection error:', error.message);
+    console.error('💡 Please check your MONGODB_URI and ensure MongoDB is running');
     process.exit(1);
   });
 
@@ -188,7 +187,7 @@ const studentQuizRoutes = require('./routes/studentQuiz');
 /* -----------------------------------------------------
    ROUTE MOUNTING
 ------------------------------------------------------ */
-app.use('/api/auth', authLimiter, authRoutes);
+app.use('/api/auth', authRoutes);
 app.use('/api/quiz', quizRoutes);
 app.use('/api/folders', folderRoutes);
 app.use('/api/bookmarks', bookmarkRoutes);
@@ -196,14 +195,13 @@ app.use('/api/students', studentRoutes);
 app.use('/api/student-quiz', studentQuizRoutes);
 
 /* -----------------------------------------------------
-   HEALTH CHECK & STATUS ENDPOINTS
+   HEALTH CHECK ENDPOINTS
 ------------------------------------------------------ */
 app.get('/api/health', (req, res) => {
   const healthCheck = {
     status: 'OK',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    memory: process.memoryUsage(),
     environment: process.env.NODE_ENV || 'development',
     database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
   };
@@ -215,60 +213,59 @@ app.get('/api/status', (req, res) => {
   res.json({
     success: true,
     message: 'Server is running',
-    version: process.env.npm_package_version || '1.0.0',
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Quiz API Server',
+    version: '1.0.0',
+    status: 'running'
   });
 });
 
 /* -----------------------------------------------------
-   ERROR LOGGING MIDDLEWARE
------------------------------------------------------- */
-app.use(errorLogger);
-
-/* -----------------------------------------------------
-   ERROR HANDLERS (must be last)
+   ERROR HANDLERS
 ------------------------------------------------------ */
 app.use(notFound);
 app.use(errorHandler);
 
 /* -----------------------------------------------------
-   GRACEFUL SHUTDOWN HANDLING
+   GRACEFUL SHUTDOWN
 ------------------------------------------------------ */
-process.on('SIGTERM', async () => {
-  console.log('🛑 SIGTERM received, starting graceful shutdown...');
+const gracefulShutdown = (signal) => {
+  console.log(`\n🛑 ${signal} received, starting graceful shutdown...`);
   
-  // Stop accepting new requests
   server.close(() => {
     console.log('✅ HTTP server closed');
     
-    // Close database connection
     mongoose.connection.close(false, () => {
       console.log('✅ MongoDB connection closed');
       process.exit(0);
     });
   });
   
-  // Force close after 10 seconds
   setTimeout(() => {
     console.log('⚠️ Forcing shutdown after timeout');
     process.exit(1);
   }, 10000);
-});
+};
 
-process.on('SIGINT', async () => {
-  console.log(' SIGINT received, shutting down...');
-  process.exit(0);
-});
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 /* -----------------------------------------------------
    UNHANDLED EXCEPTION HANDLING
 ------------------------------------------------------ */
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
 process.on('uncaughtException', (error) => {
-  console.error(' Uncaught Exception:', error);
+  console.error('❌ Uncaught Exception:', error);
   process.exit(1);
 });
 
@@ -282,8 +279,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🌐 CORS enabled for: ${allowedOrigins.length} origins`);
   console.log(`⏰ Server started at: ${new Date().toISOString()}`);
-  console.log(`🔗 Health check: http://localhost:${PORT}/api/health\n`);
+  console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
 });
 
-// Export for testing
 module.exports = app;
