@@ -14,7 +14,7 @@ const router = express.Router();
  * 1) /results/all
  * 2) /:id/results/:attemptId
  * 3) /:id/results
- * 4) other specific route (e.g. /all, /save, /share, /:id/results/download)
+ * 4) other specific route (e.g. /all, /save, /share, /:id/results/download, DELETE /:id)
  * 5) /:id  <-- MUST BE LAST
  */
 
@@ -56,7 +56,7 @@ router.get('/results/all', protect, async (req, res) => {
 });
 
 /**
- * ✅ NEW: GET /api/quiz/:id/results/:attemptId
+ * GET /api/quiz/:id/results/:attemptId
  * Get a single student's attempt with all answers (teacher only)
  */
 router.get('/:id/results/:attemptId', protect, async (req, res) => {
@@ -236,14 +236,12 @@ router.get('/:id/results/download', protect, async (req, res) => {
       sheet.addRow(row);
     }
 
-    // set response headers to download
     const safeTitle = (quiz.title || 'quiz').replace(/[^a-z0-9]/gi, '_').toLowerCase();
     const filename = `${safeTitle}_results${detailed ? '_detailed' : ''}.xlsx`;
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
 
-    // stream workbook to response
     await workbook.xlsx.write(res);
     res.end();
   } catch (err) {
@@ -300,11 +298,9 @@ router.post('/share', protect, async (req, res) => {
     const quiz = await Quiz.findOne({ _id: quizId, userId: req.user._id });
     if (!quiz) return res.status(404).json({ success: false, message: 'Quiz not found' });
 
-    // Base frontend URL (ensure no trailing slash)
     const frontendBase = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-    // Optionally verify email transporter (warn only)
     const emailReady = await emailService.verifyConnection().catch(() => false);
     if (!emailReady) console.warn('Email service not verified; emails may fail.');
 
@@ -313,7 +309,6 @@ router.post('/share', protect, async (req, res) => {
     const invalid = [];
     const alreadySent = [];
 
-    // Process serially for clearer logging and to avoid SMTP rate-limit bursts.
     for (const raw of studentEmails) {
       const email = String(raw || '').trim().toLowerCase();
 
@@ -322,18 +317,14 @@ router.post('/share', protect, async (req, res) => {
         continue;
       }
 
-      // Check if an attempt already exists for this quiz + email
       let attempt = await QuizAttempt.findOne({ quizId: quiz._id, studentEmail: email });
 
-      // If attempt exists and we've already sent the email, skip sending again
       if (attempt && attempt.emailSent) {
         alreadySent.push({ email, link: `${frontendBase}/quiz/attempt/${attempt.uniqueToken}`, token: attempt.uniqueToken });
         continue;
       }
 
-      // Create attempt if missing
       if (!attempt) {
-        // Create a secure random token (32 bytes => 64 hex chars)
         const token = crypto.randomBytes(32).toString('hex');
 
         attempt = new QuizAttempt({
@@ -356,7 +347,6 @@ router.post('/share', protect, async (req, res) => {
 
       const uniqueLink = `${frontendBase}/quiz/attempt/${attempt.uniqueToken}`;
 
-      // Send email
       try {
         const sendRes = await emailService.sendQuizInvitation(
           email,
@@ -380,7 +370,7 @@ router.post('/share', protect, async (req, res) => {
         failed.push({ email, reason });
         console.error(`Exception sending to ${email}:`, reason);
       }
-    } // end for
+    }
 
     const response = {
       success: true,
@@ -399,6 +389,40 @@ router.post('/share', protect, async (req, res) => {
   } catch (err) {
     console.error('POST /share error:', err);
     return res.status(500).json({ success: false, message: err.message || 'Internal server error' });
+  }
+});
+
+/**
+ * DELETE /api/quiz/:id
+ * Delete a quiz and all its attempts (teacher only)
+ */
+router.delete('/:id', protect, async (req, res) => {
+  try {
+    const quizId = req.params.id;
+
+    const quiz = await Quiz.findOne({
+      _id: quizId,
+      userId: req.user._id,
+    });
+
+    if (!quiz) {
+      return res.status(404).json({ success: false, message: 'Quiz not found' });
+    }
+
+    // delete attempts for this quiz+teacher
+    await QuizAttempt.deleteMany({
+      quizId: quiz._id,
+      teacherId: req.user._id,
+    });
+
+    await quiz.deleteOne();
+
+    return res.json({ success: true, message: 'Quiz and attempts deleted' });
+  } catch (err) {
+    console.error('DELETE /quiz/:id error:', err);
+    return res
+      .status(500)
+      .json({ success: false, message: err.message || 'Failed to delete quiz' });
   }
 });
 
