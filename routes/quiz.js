@@ -12,9 +12,10 @@ const router = express.Router();
 /**
  * ROUTE ORDER MATTERS:
  * 1) /results/all
- * 2) /:id/results
- * 3) any other specific route (e.g. /all, /save, /share)
- * 4) /:id  <-- MUST BE LAST
+ * 2) /:id/results/:attemptId
+ * 3) /:id/results
+ * 4) other specific route (e.g. /all, /save, /share, /:id/results/download)
+ * 5) /:id  <-- MUST BE LAST
  */
 
 /**
@@ -51,6 +52,81 @@ router.get('/results/all', protect, async (req, res) => {
   } catch (error) {
     console.error('GET /results/all error:', error);
     res.status(500).json({ message: error.message || 'Failed to fetch results' });
+  }
+});
+
+/**
+ * ✅ NEW: GET /api/quiz/:id/results/:attemptId
+ * Get a single student's attempt with all answers (teacher only)
+ */
+router.get('/:id/results/:attemptId', protect, async (req, res) => {
+  try {
+    const { id: quizId, attemptId } = req.params;
+
+    // Ensure the attempt belongs to this teacher & quiz
+    const attempt = await QuizAttempt.findOne({
+      _id: attemptId,
+      quizId: quizId,
+      teacherId: req.user._id,
+    }).lean();
+
+    if (!attempt) {
+      return res.status(404).json({ success: false, message: 'Attempt not found' });
+    }
+
+    // Map answers into a nicer "questions" array for frontend
+    const questions = (attempt.answers || []).map((a) => {
+      const options = Array.isArray(a.options) ? a.options : [];
+      const studentAnswer = a.studentAnswer || '';
+      const correctAnswer = a.correctAnswer || '';
+
+      const selectedOptionIndex = options.length
+        ? options.indexOf(studentAnswer)
+        : -1;
+
+      const correctOptionIndex = options.length
+        ? options.indexOf(correctAnswer)
+        : -1;
+
+      return {
+        _id: a.questionId || undefined,
+        questionText: a.question || '',
+        type: a.type || 'short-answer',
+        options,
+        studentAnswer,
+        correctAnswer,
+        isCorrect: !!a.isCorrect,
+        marks: a.marks ?? 0,
+        explanation: a.explanation || '',
+        selectedOptionIndex,
+        correctOptionIndex,
+      };
+    });
+
+    const response = {
+      _id: attempt._id,
+      quizId: attempt.quizId,
+      teacherId: attempt.teacherId,
+      studentName: attempt.studentName,
+      studentUSN: attempt.studentUSN,
+      studentEmail: attempt.studentEmail,
+      studentBranch: attempt.studentBranch,
+      studentYear: attempt.studentYear,
+      studentSemester: attempt.studentSemester,
+      totalMarks: attempt.totalMarks,
+      maxMarks: attempt.maxMarks,
+      percentage: attempt.percentage,
+      status: attempt.status,
+      submittedAt: attempt.submittedAt,
+      startedAt: attempt.startedAt,
+      gradedAt: attempt.gradedAt,
+      questions,
+    };
+
+    return res.json({ success: true, attempt: response });
+  } catch (error) {
+    console.error(`GET /${req.params.id}/results/${req.params.attemptId} error:`, error);
+    res.status(500).json({ success: false, message: error.message || 'Failed to fetch attempt detail' });
   }
 });
 
@@ -211,11 +287,6 @@ router.post('/save', protect, async (req, res) => {
 /**
  * POST /api/quiz/share
  * Body: { quizId: string, studentEmails: string[] }
- *
- * - Creates secure random tokens (64 hex chars)
- * - Creates a QuizAttempt for each email (if none exists)
- * - Sends an email with a unique link to each student
- * - Returns only successfully sent links + lists of failed/invalid/alreadySent
  */
 router.post('/share', protect, async (req, res) => {
   try {
@@ -265,25 +336,18 @@ router.post('/share', protect, async (req, res) => {
         // Create a secure random token (32 bytes => 64 hex chars)
         const token = crypto.randomBytes(32).toString('hex');
 
-        // NOTE:
-        // - Do not set fields that will violate your Mongoose validation (if your schema requires studentName etc).
-        // - Keep this creation minimal: quizId, teacherId, studentEmail, uniqueToken, emailSent:false
-        // - If your schema requires other fields, update schema or provide defaults.
         attempt = new QuizAttempt({
           quizId: quiz._id,
           teacherId: req.user._id,
           studentEmail: email,
           uniqueToken: token,
-          // leave status undefined so schema default applies (if set)
           emailSent: false,
-          // store helpful grading metadata
           maxMarks: Array.isArray(quiz.questions) ? quiz.questions.reduce((s, q) => s + (q.marks ?? 1), 0) : 0
         });
 
         try {
           await attempt.save();
         } catch (saveErr) {
-          // If save fails due to validation constraints, surface a clear error and continue
           console.error(`Failed to create QuizAttempt for ${email}:`, saveErr);
           failed.push({ email, reason: `Failed to create attempt: ${saveErr.message}` });
           continue;
@@ -327,7 +391,6 @@ router.post('/share', protect, async (req, res) => {
       invalid
     };
 
-    // If nothing was actually sent successfully, return 400 so frontend can show details
     if (sent.length === 0) {
       return res.status(400).json(response);
     }
