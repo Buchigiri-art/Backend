@@ -34,7 +34,7 @@ const corsOptions = {
       return callback(null, true);
     }
 
-    console.warn('⛔ Blocked CORS origin:', origin);
+    console.warn(' Blocked CORS origin:', origin);
     return callback(new Error('CORS blocked for: ' + origin), false);
   },
   credentials: true,

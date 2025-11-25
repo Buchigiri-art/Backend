@@ -1,22 +1,18 @@
-// routes/quiz.js
+// backend/routes/quiz.js
 const express = require('express');
 const crypto = require('crypto');
 const ExcelJS = require('exceljs');
 const Quiz = require('../models/Quiz');
 const QuizAttempt = require('../models/QuizAttempt');
-const Student = require('../models/Student'); // 🔹 NEW: import Student model
+const Student = require('../models/Student');
 const emailService = require('../services/emailService');
 const { protect } = require('../middleware/auth');
 
 const router = express.Router();
 
 /**
- * ROUTE ORDER MATTERS:
- * 1) /results/all
- * 2) /:id/results/:attemptId
- * 3) /:id/results
- * 4) other specific route (e.g. /all, /save, /share, /:id/results/download, DELETE /:id)
- * 5) /:id  <-- MUST BE LAST
+ * ROUTE ORDER MATTERS
+ * (keep as you had it, only internals changed)
  */
 
 /**
@@ -25,38 +21,80 @@ const router = express.Router();
  */
 router.get('/results/all', protect, async (req, res) => {
   try {
-    const QuizAttemptModel = require('../models/QuizAttempt');
-    const quizzes = await Quiz.find({ userId: req.user._id }).sort('-createdAt').lean();
+    const teacherId = req.user._id;
 
-    const quizzesWithStats = await Promise.all(
-      quizzes.map(async (quiz) => {
-        const attempts = await QuizAttemptModel.find({
-          quizId: quiz._id,
-          teacherId: req.user._id,
-        });
+    // 1) Get quizzes for this teacher
+    const quizzes = await Quiz.find({ userId: teacherId })
+      .sort('-createdAt')
+      .lean();
 
-        const submittedAttempts = attempts.filter(
-          (a) => a.status === 'submitted' || a.status === 'graded'
-        );
-        const averageScore =
-          submittedAttempts.length > 0
-            ? submittedAttempts.reduce((sum, a) => sum + (a.percentage || 0), 0) /
-              submittedAttempts.length
-            : 0;
+    if (quizzes.length === 0) {
+      return res.json([]);
+    }
 
-        return {
-          ...quiz,
-          attemptCount: attempts.length,
-          submittedCount: submittedAttempts.length,
-          averageScore,
-        };
-      })
-    );
+    const quizIds = quizzes.map((q) => q._id);
+
+    // 2) Aggregate attempts once for all quizzes (no N+1 queries)
+    const stats = await QuizAttempt.aggregate([
+      {
+        $match: {
+          quizId: { $in: quizIds },
+          teacherId,
+        },
+      },
+      {
+        $group: {
+          _id: '$quizId',
+          attemptCount: { $sum: 1 },
+          submittedCount: {
+            $sum: {
+              $cond: [
+                { $in: ['$status', ['submitted', 'graded']] },
+                1,
+                0,
+              ],
+            },
+          },
+          totalPercentage: {
+            $sum: { $ifNull: ['$percentage', 0] },
+          },
+        },
+      },
+    ]);
+
+    const statsMap = new Map();
+    stats.forEach((s) => {
+      const avg =
+        s.submittedCount > 0
+          ? s.totalPercentage / s.submittedCount
+          : 0;
+      statsMap.set(String(s._id), {
+        attemptCount: s.attemptCount,
+        submittedCount: s.submittedCount,
+        averageScore: avg,
+      });
+    });
+
+    const quizzesWithStats = quizzes.map((quiz) => {
+      const s = statsMap.get(String(quiz._id)) || {
+        attemptCount: 0,
+        submittedCount: 0,
+        averageScore: 0,
+      };
+      return {
+        ...quiz,
+        attemptCount: s.attemptCount,
+        submittedCount: s.submittedCount,
+        averageScore: s.averageScore,
+      };
+    });
 
     res.json(quizzesWithStats);
   } catch (error) {
-    console.error('GET /results/all error:', error);
-    res.status(500).json({ message: error.message || 'Failed to fetch results' });
+    console.error('GET /quiz/results/all error:', error);
+    res
+      .status(500)
+      .json({ message: error.message || 'Failed to fetch results' });
   }
 });
 
@@ -70,12 +108,15 @@ router.get('/:id/results/:attemptId', protect, async (req, res) => {
 
     const attempt = await QuizAttempt.findOne({
       _id: attemptId,
-      quizId: quizId,
+      quizId,
       teacherId: req.user._id,
-    }).lean();
+    })
+      .lean();
 
     if (!attempt) {
-      return res.status(404).json({ success: false, message: 'Attempt not found' });
+      return res
+        .status(404)
+        .json({ success: false, message: 'Attempt not found' });
     }
 
     const questions = (attempt.answers || []).map((a) => {
@@ -83,8 +124,12 @@ router.get('/:id/results/:attemptId', protect, async (req, res) => {
       const studentAnswer = a.studentAnswer || '';
       const correctAnswer = a.correctAnswer || '';
 
-      const selectedOptionIndex = options.length ? options.indexOf(studentAnswer) : -1;
-      const correctOptionIndex = options.length ? options.indexOf(correctAnswer) : -1;
+      const selectedOptionIndex = options.length
+        ? options.indexOf(studentAnswer)
+        : -1;
+      const correctOptionIndex = options.length
+        ? options.indexOf(correctAnswer)
+        : -1;
 
       return {
         _id: a.questionId || undefined,
@@ -124,7 +169,7 @@ router.get('/:id/results/:attemptId', protect, async (req, res) => {
     return res.json({ success: true, attempt: response });
   } catch (error) {
     console.error(
-      `GET /${req.params.id}/results/${req.params.attemptId} error:`,
+      `GET /quiz/${req.params.id}/results/${req.params.attemptId} error:`,
       error
     );
     res.status(500).json({
@@ -140,17 +185,23 @@ router.get('/:id/results/:attemptId', protect, async (req, res) => {
  */
 router.get('/:id/results', protect, async (req, res) => {
   try {
-    const QuizAttemptModel = require('../models/QuizAttempt');
-    const quiz = await Quiz.findOne({ _id: req.params.id, userId: req.user._id });
+    const quizId = req.params.id;
+    const teacherId = req.user._id;
+
+    const quiz = await Quiz.findOne({ _id: quizId, userId: teacherId })
+      .select('title description questions')
+      .lean();
 
     if (!quiz) {
       return res.status(404).json({ message: 'Quiz not found' });
     }
 
-    const attempts = await QuizAttemptModel.find({
-      quizId: req.params.id,
-      teacherId: req.user._id,
-    }).sort('-submittedAt');
+    const attempts = await QuizAttempt.find({
+      quizId,
+      teacherId,
+    })
+      .sort('-submittedAt')
+      .lean();
 
     res.json({
       success: true,
@@ -158,30 +209,40 @@ router.get('/:id/results', protect, async (req, res) => {
         id: quiz._id,
         title: quiz.title,
         description: quiz.description,
-        numQuestions: Array.isArray(quiz.questions) ? quiz.questions.length : 0,
+        numQuestions: Array.isArray(quiz.questions)
+          ? quiz.questions.length
+          : 0,
       },
       attempts,
     });
   } catch (error) {
-    console.error(`GET /${req.params.id}/results error:`, error);
-    res.status(500).json({ message: error.message || 'Failed to fetch attempts' });
+    console.error(`GET /quiz/${req.params.id}/results error:`, error);
+    res
+      .status(500)
+      .json({ message: error.message || 'Failed to fetch attempts' });
   }
 });
 
 /**
  * GET /api/quiz/:id/results/download
- * Download results as an Excel file (summary or detailed)
- * Query: ?detailed=true
  */
 router.get('/:id/results/download', protect, async (req, res) => {
   try {
     const quizId = req.params.id;
-    const detailed = String(req.query.detailed || 'false').toLowerCase() === 'true';
+    const teacherId = req.user._id;
+    const detailed =
+      String(req.query.detailed || 'false').toLowerCase() === 'true';
 
-    const quiz = await Quiz.findOne({ _id: quizId, userId: req.user._id }).lean();
-    if (!quiz) return res.status(404).json({ message: 'Quiz not found' });
+    const quiz = await Quiz.findOne({ _id: quizId, userId: teacherId })
+      .lean();
+    if (!quiz) {
+      return res.status(404).json({ message: 'Quiz not found' });
+    }
 
-    const attempts = await QuizAttempt.find({ quizId: quizId, teacherId: req.user._id })
+    const attempts = await QuizAttempt.find({
+      quizId,
+      teacherId,
+    })
       .sort('-submittedAt')
       .lean();
 
@@ -202,9 +263,17 @@ router.get('/:id/results/download', protect, async (req, res) => {
       { header: 'Submitted At', key: 'submittedAt', width: 22 },
     ];
 
-    if (detailed && Array.isArray(quiz.questions) && quiz.questions.length > 0) {
+    if (
+      detailed &&
+      Array.isArray(quiz.questions) &&
+      quiz.questions.length > 0
+    ) {
       quiz.questions.forEach((q, idx) => {
-        header.push({ header: `Q${idx + 1}`, key: `q_${idx + 1}`, width: 18 });
+        header.push({
+          header: `Q${idx + 1}`,
+          key: `q_${idx + 1}`,
+          width: 18,
+        });
       });
     }
 
@@ -219,18 +288,27 @@ router.get('/:id/results/download', protect, async (req, res) => {
         studentYear: a.studentYear || '',
         studentSemester: a.studentSemester || '',
         totalMarks:
-          a.totalMarks !== undefined && a.totalMarks !== null ? a.totalMarks : '',
+          a.totalMarks !== undefined && a.totalMarks !== null
+            ? a.totalMarks
+            : '',
         maxMarks:
           a.maxMarks !== undefined && a.maxMarks !== null ? a.maxMarks : '',
         percentage:
-          a.percentage !== undefined && a.percentage !== null ? a.percentage : '',
+          a.percentage !== undefined && a.percentage !== null
+            ? a.percentage
+            : '',
         status: a.status || '',
-        submittedAt: a.submittedAt ? new Date(a.submittedAt).toLocaleString() : '',
+        submittedAt: a.submittedAt
+          ? new Date(a.submittedAt).toLocaleString()
+          : '',
       };
 
       if (detailed && Array.isArray(a.answers)) {
         for (let i = 0; i < quiz.questions.length; i++) {
-          const ans = a.answers && a.answers[i] ? a.answers[i].studentAnswer : '';
+          const ans =
+            a.answers && a.answers[i]
+              ? a.answers[i].studentAnswer
+              : '';
           row[`q_${i + 1}`] = ans;
         }
       }
@@ -241,7 +319,9 @@ router.get('/:id/results/download', protect, async (req, res) => {
     const safeTitle = (quiz.title || 'quiz')
       .replace(/[^a-z0-9]/gi, '_')
       .toLowerCase();
-    const filename = `${safeTitle}_results${detailed ? '_detailed' : ''}.xlsx`;
+    const filename = `${safeTitle}_results${
+      detailed ? '_detailed' : ''
+    }.xlsx`;
 
     res.setHeader(
       'Content-Type',
@@ -255,7 +335,7 @@ router.get('/:id/results/download', protect, async (req, res) => {
     await workbook.xlsx.write(res);
     res.end();
   } catch (err) {
-    console.error('GET /:id/results/download error:', err);
+    console.error('GET /quiz/:id/results/download error:', err);
     return res
       .status(500)
       .json({ message: err.message || 'Failed to generate Excel' });
@@ -274,7 +354,7 @@ router.get('/all', protect, async (req, res) => {
       .lean();
     return res.json(quizzes);
   } catch (err) {
-    console.error('GET /all error:', err);
+    console.error('GET /quiz/all error:', err);
     return res
       .status(500)
       .json({ message: err.message || 'Failed to fetch quizzes' });
@@ -291,7 +371,7 @@ router.post('/save', protect, async (req, res) => {
     const quiz = await Quiz.create(payload);
     return res.status(201).json({ success: true, quizId: quiz._id, quiz });
   } catch (err) {
-    console.error('POST /save error:', err);
+    console.error('POST /quiz/save error:', err);
     return res
       .status(400)
       .json({ message: err.message || 'Failed to save quiz' });
@@ -302,17 +382,17 @@ router.post('/save', protect, async (req, res) => {
  * POST /api/quiz/share
  * Body: { quizId: string, studentEmails: string[] }
  *
- * 🔹 NOW copies full student data (name, usn, branch, year, semester)
- * into QuizAttempt, so the student form can show locked details.
+ * Optimised: pre-load Students + Attempts to reduce DB load
  */
 router.post('/share', protect, async (req, res) => {
   try {
-    const { quizId, studentEmails } = req.body;
+    const { quizId, studentEmails } = req.body || {};
 
-    if (!quizId)
+    if (!quizId) {
       return res
         .status(400)
         .json({ success: false, message: 'quizId is required' });
+    }
     if (!Array.isArray(studentEmails) || studentEmails.length === 0) {
       return res.status(400).json({
         success: false,
@@ -321,63 +401,84 @@ router.post('/share', protect, async (req, res) => {
     }
 
     const quiz = await Quiz.findOne({ _id: quizId, userId: req.user._id });
-    if (!quiz)
+    if (!quiz) {
       return res
         .status(404)
         .json({ success: false, message: 'Quiz not found' });
+    }
 
-    const frontendBase = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(
-      /\/$/,
-      ''
-    );
+    const frontendBase = (process.env.FRONTEND_URL ||
+      'http://localhost:5173'
+    ).replace(/\/$/, '');
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-    const emailReady = await emailService.verifyConnection().catch(() => false);
-    if (!emailReady) console.warn('Email service not verified; emails may fail.');
+    // Normalise and dedupe emails
+    const normalisedEmails = Array.from(
+      new Set(
+        studentEmails
+          .map((raw) => String(raw || '').trim().toLowerCase())
+          .filter(Boolean)
+      )
+    );
+
+    if (normalisedEmails.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No valid emails to share',
+      });
+    }
+
+    // Pre-load students for all emails
+    const students = await Student.find({
+      userId: req.user._id,
+      email: { $in: normalisedEmails },
+    })
+      .lean();
+
+    const studentMap = new Map();
+    students.forEach((s) => {
+      studentMap.set(String(s.email).toLowerCase(), s);
+    });
+
+    // Pre-load existing attempts for all these emails
+    const attempts = await QuizAttempt.find({
+      quizId,
+      studentEmail: { $in: normalisedEmails },
+    });
+
+    const attemptMap = new Map();
+    attempts.forEach((a) => {
+      attemptMap.set(
+        String(a.studentEmail || '').toLowerCase(),
+        a
+      );
+    });
+
+    const emailReady = await emailService
+      .verifyConnection()
+      .catch(() => false);
+    if (!emailReady) {
+      console.warn('Email service not verified; emails may fail.');
+    }
 
     const sent = [];
     const failed = [];
     const invalid = [];
     const alreadySent = [];
 
-    for (const raw of studentEmails) {
-      const email = String(raw || '').trim().toLowerCase();
+    // Per-email loop (emails still sent one-by-one)
+    for (const rawEmail of studentEmails) {
+      const email = String(rawEmail || '').trim().toLowerCase();
 
       if (!email || !emailRegex.test(email)) {
-        invalid.push({ email: raw, reason: 'Invalid email format' });
+        invalid.push({ email: rawEmail, reason: 'Invalid email format' });
         continue;
       }
 
-      // 🔹 Fetch student record for this email (for this teacher)
-      const student = await Student.findOne({
-        email,
-        userId: req.user._id,
-      }).lean();
+      const student = studentMap.get(email) || null;
+      let attempt = attemptMap.get(email) || null;
 
-      let attempt = await QuizAttempt.findOne({
-        quizId: quiz._id,
-        studentEmail: email,
-      });
-
-      // If attempt exists but has no details, backfill them
-      if (attempt && student) {
-        const needsUpdate =
-          !attempt.studentName ||
-          !attempt.studentUSN ||
-          !attempt.studentBranch ||
-          !attempt.studentYear ||
-          !attempt.studentSemester;
-
-        if (needsUpdate) {
-          attempt.studentName = student.name || attempt.studentName;
-          attempt.studentUSN = student.usn || attempt.studentUSN;
-          attempt.studentBranch = student.branch || attempt.studentBranch;
-          attempt.studentYear = student.year || attempt.studentYear;
-          attempt.studentSemester = student.semester || attempt.studentSemester;
-          await attempt.save();
-        }
-      }
-
+      // If attempt exists and email already sent
       if (attempt && attempt.emailSent) {
         alreadySent.push({
           email,
@@ -387,16 +488,51 @@ router.post('/share', protect, async (req, res) => {
         continue;
       }
 
+      // If attempt exists but missing details, backfill from student
+      if (attempt && student) {
+        let needsUpdate = false;
+
+        if (!attempt.studentName && student.name) {
+          attempt.studentName = student.name;
+          needsUpdate = true;
+        }
+        if (!attempt.studentUSN && student.usn) {
+          attempt.studentUSN = student.usn;
+          needsUpdate = true;
+        }
+        if (!attempt.studentBranch && student.branch) {
+          attempt.studentBranch = student.branch;
+          needsUpdate = true;
+        }
+        if (!attempt.studentYear && student.year) {
+          attempt.studentYear = student.year;
+          needsUpdate = true;
+        }
+        if (!attempt.studentSemester && student.semester) {
+          attempt.studentSemester = student.semester;
+          needsUpdate = true;
+        }
+
+        if (needsUpdate) {
+          await attempt.save();
+        }
+      }
+
       // Create attempt if missing
       if (!attempt) {
         const token = crypto.randomBytes(32).toString('hex');
+        const maxMarks = Array.isArray(quiz.questions)
+          ? quiz.questions.reduce(
+              (s, q) => s + (q.marks ?? 1),
+              0
+            )
+          : 0;
 
         attempt = new QuizAttempt({
           quizId: quiz._id,
           teacherId: req.user._id,
           studentEmail: email,
 
-          // 🔹 Copy student details if available
           studentName: student?.name || '',
           studentUSN: student?.usn || '',
           studentBranch: student?.branch || '',
@@ -405,13 +541,12 @@ router.post('/share', protect, async (req, res) => {
 
           uniqueToken: token,
           emailSent: false,
-          maxMarks: Array.isArray(quiz.questions)
-            ? quiz.questions.reduce((s, q) => s + (q.marks ?? 1), 0)
-            : 0,
+          maxMarks,
         });
 
         try {
           await attempt.save();
+          attemptMap.set(email, attempt);
         } catch (saveErr) {
           console.error(`Failed to create QuizAttempt for ${email}:`, saveErr);
           failed.push({
@@ -436,6 +571,7 @@ router.post('/share', protect, async (req, res) => {
           attempt.emailSent = true;
           attempt.sentAt = new Date();
           await attempt.save();
+
           sent.push({ email, link: uniqueLink, token: attempt.uniqueToken });
         } else {
           const reason =
@@ -466,10 +602,11 @@ router.post('/share', protect, async (req, res) => {
 
     return res.json(response);
   } catch (err) {
-    console.error('POST /share error:', err);
-    return res
-      .status(500)
-      .json({ success: false, message: err.message || 'Internal server error' });
+    console.error('POST /quiz/share error:', err);
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Internal server error',
+    });
   }
 });
 
@@ -502,9 +639,10 @@ router.delete('/:id', protect, async (req, res) => {
     return res.json({ success: true, message: 'Quiz and attempts deleted' });
   } catch (err) {
     console.error('DELETE /quiz/:id error:', err);
-    return res
-      .status(500)
-      .json({ success: false, message: err.message || 'Failed to delete quiz' });
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Failed to delete quiz',
+    });
   }
 });
 
@@ -518,10 +656,13 @@ router.get('/:id', protect, async (req, res) => {
       _id: req.params.id,
       userId: req.user._id,
     }).populate('folderId');
-    if (!quiz) return res.status(404).json({ message: 'Quiz not found' });
+
+    if (!quiz) {
+      return res.status(404).json({ message: 'Quiz not found' });
+    }
     return res.json(quiz);
   } catch (err) {
-    console.error('GET /:id error:', err);
+    console.error('GET /quiz/:id error:', err);
     return res
       .status(400)
       .json({ message: err.message || 'Failed to fetch quiz' });

@@ -1,3 +1,4 @@
+// backend/routes/bookmarks.js
 const express = require('express');
 const Bookmark = require('../models/Bookmark');
 const { protect } = require('../middleware/auth');
@@ -9,10 +10,15 @@ router.get('/', protect, async (req, res) => {
   try {
     const bookmarks = await Bookmark.find({ userId: req.user._id })
       .populate('folderId')
-      .sort('-createdAt');
+      .sort('-createdAt')
+      .lean();
+
     res.json({ success: true, bookmarks });
   } catch (error) {
-    res.status(400).json({ message: error.message });
+    console.error('GET /bookmarks error:', error);
+    res
+      .status(500)
+      .json({ message: 'Failed to fetch bookmarks. Please try again.' });
   }
 });
 
@@ -21,11 +27,14 @@ router.post('/', protect, async (req, res) => {
   try {
     const bookmark = await Bookmark.create({
       ...req.body,
-      userId: req.user._id
+      userId: req.user._id,
     });
     res.status(201).json({ success: true, bookmark });
   } catch (error) {
-    res.status(400).json({ message: error.message });
+    console.error('POST /bookmarks error:', error);
+    res
+      .status(400)
+      .json({ message: error.message || 'Failed to create bookmark' });
   }
 });
 
@@ -34,14 +43,18 @@ router.delete('/:id', protect, async (req, res) => {
   try {
     const bookmark = await Bookmark.findOneAndDelete({
       _id: req.params.id,
-      userId: req.user._id
+      userId: req.user._id,
     });
+
     if (!bookmark) {
       return res.status(404).json({ message: 'Bookmark not found' });
     }
     res.json({ success: true, message: 'Bookmark deleted' });
   } catch (error) {
-    res.status(400).json({ message: error.message });
+    console.error('DELETE /bookmarks/:id error:', error);
+    res
+      .status(500)
+      .json({ message: 'Failed to delete bookmark. Please try again.' });
   }
 });
 
