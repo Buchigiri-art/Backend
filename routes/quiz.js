@@ -12,7 +12,6 @@ const router = express.Router();
 
 /**
  * ROUTE ORDER MATTERS
- * (keep as you had it, only internals changed)
  */
 
 /**
@@ -110,8 +109,7 @@ router.get('/:id/results/:attemptId', protect, async (req, res) => {
       _id: attemptId,
       quizId,
       teacherId: req.user._id,
-    })
-      .lean();
+    }).lean();
 
     if (!attempt) {
       return res
@@ -233,8 +231,7 @@ router.get('/:id/results/download', protect, async (req, res) => {
     const detailed =
       String(req.query.detailed || 'false').toLowerCase() === 'true';
 
-    const quiz = await Quiz.findOne({ _id: quizId, userId: teacherId })
-      .lean();
+    const quiz = await Quiz.findOne({ _id: quizId, userId: teacherId }).lean();
     if (!quiz) {
       return res.status(404).json({ message: 'Quiz not found' });
     }
@@ -292,7 +289,9 @@ router.get('/:id/results/download', protect, async (req, res) => {
             ? a.totalMarks
             : '',
         maxMarks:
-          a.maxMarks !== undefined && a.maxMarks !== null ? a.maxMarks : '',
+          a.maxMarks !== undefined && a.maxMarks !== null
+            ? a.maxMarks
+            : '',
         percentage:
           a.percentage !== undefined && a.percentage !== null
             ? a.percentage
@@ -380,13 +379,14 @@ router.post('/save', protect, async (req, res) => {
 
 /**
  * POST /api/quiz/share
- * Body: { quizId: string, studentEmails: string[] }
+ * Body: { quizId: string, studentEmails: string[], forceResend?: boolean }
  *
- * Optimised: pre-load Students + Attempts to reduce DB load
+ * - If forceResend = true → always generate NEW token + send NEW email
+ * - If forceResend = false/undefined → keep old "alreadySent" behavior
  */
 router.post('/share', protect, async (req, res) => {
   try {
-    const { quizId, studentEmails } = req.body || {};
+    const { quizId, studentEmails, forceResend } = req.body || {};
 
     if (!quizId) {
       return res
@@ -432,8 +432,7 @@ router.post('/share', protect, async (req, res) => {
     const students = await Student.find({
       userId: req.user._id,
       email: { $in: normalisedEmails },
-    })
-      .lean();
+    }).lean();
 
     const studentMap = new Map();
     students.forEach((s) => {
@@ -448,15 +447,10 @@ router.post('/share', protect, async (req, res) => {
 
     const attemptMap = new Map();
     attempts.forEach((a) => {
-      attemptMap.set(
-        String(a.studentEmail || '').toLowerCase(),
-        a
-      );
+      attemptMap.set(String(a.studentEmail || '').toLowerCase(), a);
     });
 
-    const emailReady = await emailService
-      .verifyConnection()
-      .catch(() => false);
+    const emailReady = await emailService.verifyConnection().catch(() => false);
     if (!emailReady) {
       console.warn('Email service not verified; emails may fail.');
     }
@@ -466,7 +460,6 @@ router.post('/share', protect, async (req, res) => {
     const invalid = [];
     const alreadySent = [];
 
-    // Per-email loop (emails still sent one-by-one)
     for (const rawEmail of studentEmails) {
       const email = String(rawEmail || '').trim().toLowerCase();
 
@@ -478,47 +471,64 @@ router.post('/share', protect, async (req, res) => {
       const student = studentMap.get(email) || null;
       let attempt = attemptMap.get(email) || null;
 
-      // If attempt exists and email already sent
-      if (attempt && attempt.emailSent) {
-        alreadySent.push({
-          email,
-          link: `${frontendBase}/quiz/attempt/${attempt.uniqueToken}`,
-          token: attempt.uniqueToken,
-        });
-        continue;
-      }
-
-      // If attempt exists but missing details, backfill from student
-      if (attempt && student) {
-        let needsUpdate = false;
-
-        if (!attempt.studentName && student.name) {
-          attempt.studentName = student.name;
-          needsUpdate = true;
-        }
-        if (!attempt.studentUSN && student.usn) {
-          attempt.studentUSN = student.usn;
-          needsUpdate = true;
-        }
-        if (!attempt.studentBranch && student.branch) {
-          attempt.studentBranch = student.branch;
-          needsUpdate = true;
-        }
-        if (!attempt.studentYear && student.year) {
-          attempt.studentYear = student.year;
-          needsUpdate = true;
-        }
-        if (!attempt.studentSemester && student.semester) {
-          attempt.studentSemester = student.semester;
-          needsUpdate = true;
+      // 1) Existing attempt handling
+      if (attempt) {
+        // Old behavior: if already sent and NOT forcing resend → just report alreadySent
+        if (attempt.emailSent && !forceResend) {
+          alreadySent.push({
+            email,
+            link: `${frontendBase}/quiz/attempt/${attempt.uniqueToken}`,
+            token: attempt.uniqueToken,
+          });
+          continue;
         }
 
-        if (needsUpdate) {
+        // Backfill from Student
+        if (student) {
+          let needsUpdate = false;
+
+          if (!attempt.studentName && student.name) {
+            attempt.studentName = student.name;
+            needsUpdate = true;
+          }
+          if (!attempt.studentUSN && student.usn) {
+            attempt.studentUSN = student.usn;
+            needsUpdate = true;
+          }
+          if (!attempt.studentBranch && student.branch) {
+            attempt.studentBranch = student.branch;
+            needsUpdate = true;
+          }
+          if (!attempt.studentYear && student.year) {
+            attempt.studentYear = student.year;
+            needsUpdate = true;
+          }
+          if (!attempt.studentSemester && student.semester) {
+            attempt.studentSemester = student.semester;
+            needsUpdate = true;
+          }
+
+          // If forcing resend: generate NEW token
+          if (forceResend) {
+            attempt.uniqueToken = crypto.randomBytes(32).toString('hex');
+            attempt.emailSent = false;
+            attempt.sentAt = null;
+            needsUpdate = true;
+          }
+
+          if (needsUpdate) {
+            await attempt.save();
+          }
+        } else if (forceResend) {
+          // No student record, but still force new token
+          attempt.uniqueToken = crypto.randomBytes(32).toString('hex');
+          attempt.emailSent = false;
+          attempt.sentAt = null;
           await attempt.save();
         }
       }
 
-      // Create attempt if missing
+      // 2) Create attempt if missing
       if (!attempt) {
         const token = crypto.randomBytes(32).toString('hex');
         const maxMarks = Array.isArray(quiz.questions)
@@ -557,6 +567,7 @@ router.post('/share', protect, async (req, res) => {
         }
       }
 
+      // 3) Send email with current token
       const uniqueLink = `${frontendBase}/quiz/attempt/${attempt.uniqueToken}`;
 
       try {
@@ -596,11 +607,8 @@ router.post('/share', protect, async (req, res) => {
       invalid,
     };
 
-    if (sent.length === 0) {
-      return res.status(400).json(response);
-    }
-
-    return res.json(response);
+    // Always 200 for valid request, even if sent.length === 0
+    return res.status(200).json(response);
   } catch (err) {
     console.error('POST /quiz/share error:', err);
     return res.status(500).json({
