@@ -1,55 +1,97 @@
+// backend/services/excelService.js
 const XLSX = require('xlsx');
 
 class ExcelService {
   generateQuizResultsExcel(quizTitle, attempts) {
-    // Create worksheet data
+    const safeTitle = quizTitle || 'Quiz';
+    const safeAttempts = Array.isArray(attempts) ? attempts : [];
+
+    // Header / meta info
     const wsData = [
       ['Quiz Results Report'],
-      ['Quiz Title:', quizTitle],
+      ['Quiz Title:', safeTitle],
       ['Generated on:', new Date().toLocaleString()],
-      ['Total Students:', attempts.length],
+      ['Total Students:', safeAttempts.length],
       [],
-      ['Name', 'USN', 'Email', 'Branch', 'Year', 'Semester', 'Total Marks', 'Max Marks', 'Percentage (%)', 'Status', 'Submitted At']
+      [
+        'Name',
+        'USN',
+        'Email',
+        'Branch',
+        'Year',
+        'Semester',
+        'Total Marks',
+        'Max Marks',
+        'Percentage (%)',
+        'Status',
+        'Submitted At',
+      ],
     ];
 
-    // Add student data
-    attempts.forEach(attempt => {
+    // Student rows
+    safeAttempts.forEach((attempt) => {
+      const totalMarks = Number.isFinite(Number(attempt.totalMarks))
+        ? Number(attempt.totalMarks)
+        : 0;
+      const maxMarks = Number.isFinite(Number(attempt.maxMarks))
+        ? Number(attempt.maxMarks)
+        : 0;
+      const percentage = Number.isFinite(Number(attempt.percentage))
+        ? Number(attempt.percentage)
+        : 0;
+
       wsData.push([
-        attempt.studentName,
-        attempt.studentUSN,
-        attempt.studentEmail,
-        attempt.studentBranch,
-        attempt.studentYear,
-        attempt.studentSemester,
-        attempt.totalMarks,
-        attempt.maxMarks,
-        attempt.percentage,
-        attempt.status,
-        attempt.submittedAt ? new Date(attempt.submittedAt).toLocaleString() : 'Not submitted'
+        attempt.studentName || '',
+        attempt.studentUSN || '',
+        attempt.studentEmail || '',
+        attempt.studentBranch || '',
+        attempt.studentYear || '',
+        attempt.studentSemester || '',
+        totalMarks,
+        maxMarks,
+        percentage,
+        attempt.status || '',
+        attempt.submittedAt
+          ? new Date(attempt.submittedAt).toLocaleString()
+          : 'Not submitted',
       ]);
     });
 
-    // Calculate statistics
-    if (attempts.length > 0) {
-      const avgMarks = attempts.reduce((sum, a) => sum + a.totalMarks, 0) / attempts.length;
-      const avgPercentage = attempts.reduce((sum, a) => sum + a.percentage, 0) / attempts.length;
-      const maxScore = Math.max(...attempts.map(a => a.totalMarks));
-      const minScore = Math.min(...attempts.map(a => a.totalMarks));
+    // Statistics
+    if (safeAttempts.length > 0) {
+      const totalMarksArr = safeAttempts.map((a) =>
+        Number.isFinite(Number(a.totalMarks)) ? Number(a.totalMarks) : 0,
+      );
+      const percentageArr = safeAttempts.map((a) =>
+        Number.isFinite(Number(a.percentage)) ? Number(a.percentage) : 0,
+      );
+
+      const avgMarks =
+        totalMarksArr.reduce((sum, v) => sum + v, 0) / safeAttempts.length;
+      const avgPercentage =
+        percentageArr.reduce((sum, v) => sum + v, 0) / safeAttempts.length;
+
+      const maxScore = Math.max(...totalMarksArr);
+      const minScore = Math.min(...totalMarksArr);
+
+      const passCount = percentageArr.filter((p) => p >= 40).length;
 
       wsData.push([]);
       wsData.push(['Statistics']);
       wsData.push(['Average Marks:', avgMarks.toFixed(2)]);
-      wsData.push(['Average Percentage:', avgPercentage.toFixed(2) + '%']);
+      wsData.push(['Average Percentage:', `${avgPercentage.toFixed(2)}%`]);
       wsData.push(['Highest Score:', maxScore]);
       wsData.push(['Lowest Score:', minScore]);
-      wsData.push(['Pass Rate (>40%):', attempts.filter(a => a.percentage >= 40).length + '/' + attempts.length]);
+      wsData.push([
+        'Pass Rate (≥40%):',
+        `${passCount}/${safeAttempts.length}`,
+      ]);
     }
 
-    // Create workbook and worksheet
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet(wsData);
 
-    // Set column widths
+    // Column widths
     ws['!cols'] = [
       { wch: 20 }, // Name
       { wch: 15 }, // USN
@@ -61,88 +103,147 @@ class ExcelService {
       { wch: 12 }, // Max Marks
       { wch: 15 }, // Percentage
       { wch: 12 }, // Status
-      { wch: 20 }  // Submitted At
+      { wch: 20 }, // Submitted At
     ];
 
-    // Add worksheet to workbook
     XLSX.utils.book_append_sheet(wb, ws, 'Results');
 
-    // Generate buffer
+    // Return raw buffer for Express
     const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
     return excelBuffer;
   }
 
   generateDetailedQuizResultsExcel(quizTitle, quiz, attempts) {
+    const safeTitle = quizTitle || 'Quiz';
+    const safeQuiz = quiz || {};
+    const safeAttempts = Array.isArray(attempts) ? attempts : [];
+
+    const questionCount = Array.isArray(safeQuiz.questions)
+      ? safeQuiz.questions.length
+      : 0;
+
     const wb = XLSX.utils.book_new();
 
-    // Summary Sheet
+    // Summary sheet
     const summaryData = [
       ['Quiz Results - Detailed Report'],
-      ['Quiz Title:', quizTitle],
+      ['Quiz Title:', safeTitle],
       ['Generated on:', new Date().toLocaleString()],
-      ['Total Questions:', quiz.questions.length],
-      ['Total Students:', attempts.length],
+      ['Total Questions:', questionCount],
+      ['Total Students:', safeAttempts.length],
       [],
-      ['Name', 'USN', 'Email', 'Branch', 'Year', 'Semester', 'Total Marks', 'Max Marks', 'Percentage (%)', 'Status']
+      [
+        'Name',
+        'USN',
+        'Email',
+        'Branch',
+        'Year',
+        'Semester',
+        'Total Marks',
+        'Max Marks',
+        'Percentage (%)',
+        'Status',
+      ],
     ];
 
-    attempts.forEach(attempt => {
+    safeAttempts.forEach((attempt) => {
+      const totalMarks = Number.isFinite(Number(attempt.totalMarks))
+        ? Number(attempt.totalMarks)
+        : 0;
+      const maxMarks = Number.isFinite(Number(attempt.maxMarks))
+        ? Number(attempt.maxMarks)
+        : 0;
+      const percentage = Number.isFinite(Number(attempt.percentage))
+        ? Number(attempt.percentage)
+        : 0;
+
       summaryData.push([
-        attempt.studentName,
-        attempt.studentUSN,
-        attempt.studentEmail,
-        attempt.studentBranch,
-        attempt.studentYear,
-        attempt.studentSemester,
-        attempt.totalMarks,
-        attempt.maxMarks,
-        attempt.percentage,
-        attempt.status
+        attempt.studentName || '',
+        attempt.studentUSN || '',
+        attempt.studentEmail || '',
+        attempt.studentBranch || '',
+        attempt.studentYear || '',
+        attempt.studentSemester || '',
+        totalMarks,
+        maxMarks,
+        percentage,
+        attempt.status || '',
       ]);
     });
 
     const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
     wsSummary['!cols'] = [
-      { wch: 20 }, { wch: 15 }, { wch: 25 }, { wch: 15 }, 
-      { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, 
-      { wch: 15 }, { wch: 12 }
+      { wch: 20 },
+      { wch: 15 },
+      { wch: 25 },
+      { wch: 15 },
+      { wch: 10 },
+      { wch: 10 },
+      { wch: 12 },
+      { wch: 12 },
+      { wch: 15 },
+      { wch: 12 },
     ];
     XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
 
     // Individual student sheets (limit to first 10 for performance)
-    attempts.slice(0, 10).forEach((attempt, index) => {
+    safeAttempts.slice(0, 10).forEach((attempt) => {
+      const answers = Array.isArray(attempt.answers) ? attempt.answers : [];
+
+      const totalMarks = Number.isFinite(Number(attempt.totalMarks))
+        ? Number(attempt.totalMarks)
+        : 0;
+      const maxMarks = Number.isFinite(Number(attempt.maxMarks))
+        ? Number(attempt.maxMarks)
+        : 0;
+      const percentage = Number.isFinite(Number(attempt.percentage))
+        ? Number(attempt.percentage)
+        : 0;
+
       const studentData = [
         ['Student Details'],
-        ['Name:', attempt.studentName],
-        ['USN:', attempt.studentUSN],
-        ['Email:', attempt.studentEmail],
-        ['Branch:', attempt.studentBranch],
-        ['Year:', attempt.studentYear],
-        ['Semester:', attempt.studentSemester],
+        ['Name:', attempt.studentName || ''],
+        ['USN:', attempt.studentUSN || ''],
+        ['Email:', attempt.studentEmail || ''],
+        ['Branch:', attempt.studentBranch || ''],
+        ['Year:', attempt.studentYear || ''],
+        ['Semester:', attempt.studentSemester || ''],
         [],
-        ['Score:', `${attempt.totalMarks}/${attempt.maxMarks} (${attempt.percentage}%)`],
+        [
+          'Score:',
+          `${totalMarks}/${maxMarks} (${percentage.toFixed(2)}%)`,
+        ],
         [],
-        ['Question', 'Type', 'Student Answer', 'Correct Answer', 'Result', 'Marks']
+        ['Question', 'Type', 'Student Answer', 'Correct Answer', 'Result', 'Marks'],
       ];
 
-      attempt.answers.forEach((ans, qNum) => {
+      answers.forEach((ans, qNum) => {
+        const isCorrect = !!ans.isCorrect;
         studentData.push([
-          `Q${qNum + 1}: ${ans.question}`,
-          ans.type,
+          `Q${qNum + 1}: ${ans.question || ''}`,
+          ans.type || '',
           ans.studentAnswer || 'Not answered',
-          ans.correctAnswer,
-          ans.isCorrect ? 'Correct' : 'Incorrect',
-          ans.marks
+          ans.correctAnswer || '',
+          isCorrect ? 'Correct' : 'Incorrect',
+          Number.isFinite(Number(ans.marks)) ? Number(ans.marks) : '',
         ]);
       });
 
       const wsStudent = XLSX.utils.aoa_to_sheet(studentData);
       wsStudent['!cols'] = [
-        { wch: 50 }, { wch: 15 }, { wch: 30 }, 
-        { wch: 30 }, { wch: 12 }, { wch: 10 }
+        { wch: 50 },
+        { wch: 15 },
+        { wch: 30 },
+        { wch: 30 },
+        { wch: 12 },
+        { wch: 10 },
       ];
-      
-      const sheetName = `${attempt.studentUSN}`.substring(0, 31); // Excel sheet name limit
+
+      // Excel sheet name max 31 chars
+      const sheetNameRaw =
+        attempt.studentUSN || attempt.studentName || `Student${Math.random()}`;
+      const sheetName = String(sheetNameRaw).substring(0, 31);
+
       XLSX.utils.book_append_sheet(wb, wsStudent, sheetName);
     });
 

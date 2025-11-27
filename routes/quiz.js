@@ -1,11 +1,12 @@
 // backend/routes/quiz.js
 const express = require('express');
 const crypto = require('crypto');
-const ExcelJS = require('exceljs');
+// const ExcelJS = require('exceljs'); // ❌ no longer needed
 const Quiz = require('../models/Quiz');
 const QuizAttempt = require('../models/QuizAttempt');
 const Student = require('../models/Student');
 const emailService = require('../services/emailService');
+const excelService = require('../services/excelService'); // ✅ use XLSX-based service
 const { protect } = require('../middleware/auth');
 
 const router = express.Router();
@@ -204,6 +205,7 @@ router.get('/:id/results', protect, async (req, res) => {
 
 /**
  * GET /api/quiz/:id/results/download
+ * Summary or detailed Excel export using ExcelService (XLSX)
  */
 router.get('/:id/results/download', protect, async (req, res) => {
   try {
@@ -223,65 +225,26 @@ router.get('/:id/results/download', protect, async (req, res) => {
       .sort('-submittedAt')
       .lean();
 
-    const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet('Results');
+    let buffer;
 
-    const header = [
-      { header: 'Student Name', key: 'studentName', width: 30 },
-      { header: 'USN', key: 'studentUSN', width: 18 },
-      { header: 'Email', key: 'studentEmail', width: 30 },
-      { header: 'Branch', key: 'studentBranch', width: 18 },
-      { header: 'Year', key: 'studentYear', width: 10 },
-      { header: 'Semester', key: 'studentSemester', width: 10 },
-      { header: 'Total Marks', key: 'totalMarks', width: 14 },
-      { header: 'Max Marks', key: 'maxMarks', width: 12 },
-      { header: 'Percentage', key: 'percentage', width: 12 },
-      { header: 'Status', key: 'status', width: 12 },
-      { header: 'Submitted At', key: 'submittedAt', width: 22 },
-    ];
-
-    if (detailed && Array.isArray(quiz.questions) && quiz.questions.length > 0) {
-      quiz.questions.forEach((q, idx) => {
-        header.push({
-          header: `Q${idx + 1}`,
-          key: `q_${idx + 1}`,
-          width: 18,
-        });
-      });
+    if (detailed) {
+      // Detailed report: summary + first 10 students with per-question breakdown
+      buffer = excelService.generateDetailedQuizResultsExcel(
+        quiz.title || 'Quiz',
+        quiz,
+        attempts,
+      );
+    } else {
+      // Simple summary report (one sheet)
+      buffer = excelService.generateQuizResultsExcel(
+        quiz.title || 'Quiz',
+        attempts,
+      );
     }
 
-    sheet.columns = header;
-
-    for (const a of attempts) {
-      const row = {
-        studentName: a.studentName || '',
-        studentUSN: a.studentUSN || '',
-        studentEmail: a.studentEmail || '',
-        studentBranch: a.studentBranch || '',
-        studentYear: a.studentYear || '',
-        studentSemester: a.studentSemester || '',
-        totalMarks:
-          a.totalMarks !== undefined && a.totalMarks !== null ? a.totalMarks : '',
-        maxMarks: a.maxMarks !== undefined && a.maxMarks !== null ? a.maxMarks : '',
-        percentage:
-          a.percentage !== undefined && a.percentage !== null ? a.percentage : '',
-        status: a.status || '',
-        submittedAt: a.submittedAt
-          ? new Date(a.submittedAt).toLocaleString()
-          : '',
-      };
-
-      if (detailed && Array.isArray(a.answers)) {
-        for (let i = 0; i < quiz.questions.length; i++) {
-          const ans = a.answers && a.answers[i] ? a.answers[i].studentAnswer : '';
-          row[`q_${i + 1}`] = ans;
-        }
-      }
-
-      sheet.addRow(row);
-    }
-
-    const safeTitle = (quiz.title || 'quiz').replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    const safeTitle = (quiz.title || 'quiz')
+      .replace(/[^a-z0-9]/gi, '_')
+      .toLowerCase();
     const filename = `${safeTitle}_results${detailed ? '_detailed' : ''}.xlsx`;
 
     res.setHeader(
@@ -290,11 +253,12 @@ router.get('/:id/results/download', protect, async (req, res) => {
     );
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
 
-    await workbook.xlsx.write(res);
-    res.end();
+    return res.send(buffer);
   } catch (err) {
     console.error('GET /quiz/:id/results/download error:', err);
-    return res.status(500).json({ message: err.message || 'Failed to generate Excel' });
+    if (!res.headersSent) {
+      return res.status(500).json({ message: err.message || 'Failed to generate Excel' });
+    }
   }
 });
 
