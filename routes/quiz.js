@@ -1,11 +1,11 @@
 // backend/routes/quiz.js
 const express = require('express');
 const crypto = require('crypto');
+const ExcelJS = require('exceljs'); // ✅ use ExcelJS directly
 const Quiz = require('../models/Quiz');
 const QuizAttempt = require('../models/QuizAttempt');
 const Student = require('../models/Student');
 const emailService = require('../services/emailService');
-const excelService = require('../services/excelService');
 const { protect } = require('../middleware/auth');
 
 const router = express.Router();
@@ -201,8 +201,16 @@ router.get('/:id/results', protect, async (req, res) => {
 });
 
 /**
+ * Small helper for safe numeric conversion
+ */
+function toNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
  * GET /api/quiz/:id/results/download
- * Summary or detailed Excel export using ExcelService (XLSX)
+ * Summary or detailed Excel export using ExcelJS
  */
 router.get('/:id/results/download', protect, async (req, res) => {
   try {
@@ -222,16 +230,70 @@ router.get('/:id/results/download', protect, async (req, res) => {
       .sort('-submittedAt')
       .lean();
 
-    let buffer;
+    console.log(
+      `[Excel] Generating ${detailed ? 'detailed' : 'summary'} report for quiz`,
+      quizId,
+      'attempts:',
+      attempts.length,
+    );
 
-    if (detailed) {
-      buffer = excelService.generateDetailedQuizResultsExcel(
-        quiz.title || 'Quiz',
-        quiz,
-        attempts,
-      );
-    } else {
-      buffer = excelService.generateQuizResultsExcel(quiz.title || 'Quiz', attempts);
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Results');
+
+    const header = [
+      { header: 'Student Name', key: 'studentName', width: 30 },
+      { header: 'USN', key: 'studentUSN', width: 18 },
+      { header: 'Email', key: 'studentEmail', width: 30 },
+      { header: 'Branch', key: 'studentBranch', width: 18 },
+      { header: 'Year', key: 'studentYear', width: 10 },
+      { header: 'Semester', key: 'studentSemester', width: 10 },
+      { header: 'Total Marks', key: 'totalMarks', width: 14 },
+      { header: 'Max Marks', key: 'maxMarks', width: 12 },
+      { header: 'Percentage', key: 'percentage', width: 12 },
+      { header: 'Status', key: 'status', width: 12 },
+      { header: 'Submitted At', key: 'submittedAt', width: 22 },
+    ];
+
+    if (detailed && Array.isArray(quiz.questions) && quiz.questions.length > 0) {
+      quiz.questions.forEach((q, idx) => {
+        header.push({
+          header: `Q${idx + 1}`,
+          key: `q_${idx + 1}`,
+          width: 18,
+        });
+      });
+    }
+
+    sheet.columns = header;
+
+    for (const a of attempts) {
+      const row = {
+        studentName: a.studentName || '',
+        studentUSN: a.studentUSN || '',
+        studentEmail: a.studentEmail || '',
+        studentBranch: a.studentBranch || '',
+        studentYear: a.studentYear || '',
+        studentSemester: a.studentSemester || '',
+        totalMarks: toNumber(a.totalMarks, ''),
+        maxMarks: toNumber(a.maxMarks, ''),
+        percentage: toNumber(a.percentage, ''),
+        status: a.status || '',
+        submittedAt: a.submittedAt
+          ? new Date(a.submittedAt).toLocaleString()
+          : '',
+      };
+
+      if (detailed && Array.isArray(a.answers) && Array.isArray(quiz.questions)) {
+        for (let i = 0; i < quiz.questions.length; i++) {
+          const ans =
+            a.answers && a.answers[i]
+              ? a.answers[i].studentAnswer || ''
+              : '';
+          row[`q_${i + 1}`] = ans;
+        }
+      }
+
+      sheet.addRow(row);
     }
 
     const safeTitle = (quiz.title || 'quiz')
@@ -245,11 +307,15 @@ router.get('/:id/results/download', protect, async (req, res) => {
     );
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
 
-    return res.send(buffer);
+    // 🔥 Instead of streaming to res, generate a buffer and send it
+    const buffer = await workbook.xlsx.writeBuffer();
+    return res.send(Buffer.from(buffer));
   } catch (err) {
     console.error('GET /quiz/:id/results/download error:', err);
     if (!res.headersSent) {
-      return res.status(500).json({ message: err.message || 'Failed to generate Excel' });
+      return res.status(500).json({
+        message: err.message || 'Failed to generate Excel',
+      });
     }
   }
 });
@@ -288,7 +354,7 @@ router.post('/save', protect, async (req, res) => {
 
 /**
  * POST /api/quiz/share
- * Optimized share (same as you had, sending emails in background)
+ * Optimized share (emails in background)
  */
 router.post('/share', protect, async (req, res) => {
   try {
