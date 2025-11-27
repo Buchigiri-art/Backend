@@ -1,11 +1,48 @@
 // backend/services/excelService.js
 const XLSX = require('xlsx');
 
+function toNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+// Excel sheet name sanitization + uniqueness helper
+function makeUniqueSheetName(rawName, usedNames, fallbackBase) {
+  // Excel sheet name rules:
+  // - Max 31 chars
+  // - Cannot contain: : \ / ? * [ ]
+  // - Cannot be empty
+  const invalidChars = /[:\\\/\?\*\[\]]/g;
+
+  let base = String(rawName || fallbackBase || 'Sheet')
+    .replace(invalidChars, '_')
+    .trim();
+
+  if (!base) {
+    base = fallbackBase || 'Sheet';
+  }
+
+  // Leave room for suffixes like "_2", "_3"
+  base = base.substring(0, 25);
+
+  let name = base;
+  let suffix = 1;
+
+  while (usedNames.has(name)) {
+    const sfx = `_${suffix++}`;
+    name = (base + sfx).substring(0, 31);
+  }
+
+  usedNames.add(name);
+  return name;
+}
+
 class ExcelService {
   generateQuizResultsExcel(quizTitle, attempts) {
     const safeTitle = quizTitle || 'Quiz';
     const safeAttempts = Array.isArray(attempts) ? attempts : [];
 
+    // Header / meta info
     const wsData = [
       ['Quiz Results Report'],
       ['Quiz Title:', safeTitle],
@@ -27,16 +64,11 @@ class ExcelService {
       ],
     ];
 
+    // Student rows
     safeAttempts.forEach((attempt) => {
-      const totalMarks = Number.isFinite(Number(attempt.totalMarks))
-        ? Number(attempt.totalMarks)
-        : 0;
-      const maxMarks = Number.isFinite(Number(attempt.maxMarks))
-        ? Number(attempt.maxMarks)
-        : 0;
-      const percentage = Number.isFinite(Number(attempt.percentage))
-        ? Number(attempt.percentage)
-        : 0;
+      const totalMarks = toNumber(attempt.totalMarks, 0);
+      const maxMarks = toNumber(attempt.maxMarks, 0);
+      const percentage = toNumber(attempt.percentage, 0);
 
       wsData.push([
         attempt.studentName || '',
@@ -55,14 +87,10 @@ class ExcelService {
       ]);
     });
 
-    // Basic stats
+    // Statistics
     if (safeAttempts.length > 0) {
-      const totalMarksArr = safeAttempts.map((a) =>
-        Number.isFinite(Number(a.totalMarks)) ? Number(a.totalMarks) : 0,
-      );
-      const percentageArr = safeAttempts.map((a) =>
-        Number.isFinite(Number(a.percentage)) ? Number(a.percentage) : 0,
-      );
+      const totalMarksArr = safeAttempts.map((a) => toNumber(a.totalMarks, 0));
+      const percentageArr = safeAttempts.map((a) => toNumber(a.percentage, 0));
 
       const avgMarks =
         totalMarksArr.reduce((sum, v) => sum + v, 0) / safeAttempts.length;
@@ -71,6 +99,7 @@ class ExcelService {
 
       const maxScore = Math.max(...totalMarksArr);
       const minScore = Math.min(...totalMarksArr);
+
       const passCount = percentageArr.filter((p) => p >= 40).length;
 
       wsData.push([]);
@@ -88,6 +117,7 @@ class ExcelService {
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet(wsData);
 
+    // Column widths
     ws['!cols'] = [
       { wch: 20 }, // Name
       { wch: 15 }, // USN
@@ -104,9 +134,8 @@ class ExcelService {
 
     XLSX.utils.book_append_sheet(wb, ws, 'Results');
 
-    // ✅ Node-friendly Buffer
-    const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' });
-    return buffer;
+    const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    return excelBuffer;
   }
 
   generateDetailedQuizResultsExcel(quizTitle, quiz, attempts) {
@@ -119,6 +148,7 @@ class ExcelService {
       : 0;
 
     const wb = XLSX.utils.book_new();
+    const usedNames = new Set();
 
     // Summary sheet
     const summaryData = [
@@ -143,15 +173,9 @@ class ExcelService {
     ];
 
     safeAttempts.forEach((attempt) => {
-      const totalMarks = Number.isFinite(Number(attempt.totalMarks))
-        ? Number(attempt.totalMarks)
-        : 0;
-      const maxMarks = Number.isFinite(Number(attempt.maxMarks))
-        ? Number(attempt.maxMarks)
-        : 0;
-      const percentage = Number.isFinite(Number(attempt.percentage))
-        ? Number(attempt.percentage)
-        : 0;
+      const totalMarks = toNumber(attempt.totalMarks, 0);
+      const maxMarks = toNumber(attempt.maxMarks, 0);
+      const percentage = toNumber(attempt.percentage, 0);
 
       summaryData.push([
         attempt.studentName || '',
@@ -180,21 +204,15 @@ class ExcelService {
       { wch: 15 },
       { wch: 12 },
     ];
-    XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
+    XLSX.utils.book_append_sheet(wb, wsSummary, makeUniqueSheetName('Summary', usedNames, 'Summary'));
 
-    // Per-student sheets (limit to 10)
+    // Individual student sheets (limit to first 10 for performance)
     safeAttempts.slice(0, 10).forEach((attempt, i) => {
       const answers = Array.isArray(attempt.answers) ? attempt.answers : [];
 
-      const totalMarks = Number.isFinite(Number(attempt.totalMarks))
-        ? Number(attempt.totalMarks)
-        : 0;
-      const maxMarks = Number.isFinite(Number(attempt.maxMarks))
-        ? Number(attempt.maxMarks)
-        : 0;
-      const percentage = Number.isFinite(Number(attempt.percentage))
-        ? Number(attempt.percentage)
-        : 0;
+      const totalMarks = toNumber(attempt.totalMarks, 0);
+      const maxMarks = toNumber(attempt.maxMarks, 0);
+      const percentage = toNumber(attempt.percentage, 0);
 
       const studentData = [
         ['Student Details'],
@@ -205,7 +223,10 @@ class ExcelService {
         ['Year:', attempt.studentYear || ''],
         ['Semester:', attempt.studentSemester || ''],
         [],
-        ['Score:', `${totalMarks}/${maxMarks} (${percentage.toFixed(2)}%)`],
+        [
+          'Score:',
+          `${totalMarks}/${maxMarks} (${percentage.toFixed(2)}%)`,
+        ],
         [],
         ['Question', 'Type', 'Student Answer', 'Correct Answer', 'Result', 'Marks'],
       ];
@@ -218,7 +239,7 @@ class ExcelService {
           ans.studentAnswer || 'Not answered',
           ans.correctAnswer || '',
           isCorrect ? 'Correct' : 'Incorrect',
-          Number.isFinite(Number(ans.marks)) ? Number(ans.marks) : '',
+          toNumber(ans.marks, ''),
         ]);
       });
 
@@ -234,13 +255,13 @@ class ExcelService {
 
       const rawName =
         attempt.studentUSN || attempt.studentName || `Student${i + 1}`;
-      const sheetName = String(rawName).substring(0, 31);
+      const sheetName = makeUniqueSheetName(rawName, usedNames, `Student${i + 1}`);
 
       XLSX.utils.book_append_sheet(wb, wsStudent, sheetName);
     });
 
-    const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' });
-    return buffer;
+    const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    return excelBuffer;
   }
 }
 
