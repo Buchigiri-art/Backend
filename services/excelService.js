@@ -108,7 +108,6 @@ class ExcelService {
 
     XLSX.utils.book_append_sheet(wb, ws, 'Results');
 
-    // Return raw buffer for Express
     const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
     return excelBuffer;
   }
@@ -187,7 +186,7 @@ class ExcelService {
     XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
 
     // Individual student sheets (limit to first 10 for performance)
-    safeAttempts.slice(0, 10).forEach((attempt) => {
+    safeAttempts.slice(0, 10).forEach((attempt, i) => {
       const answers = Array.isArray(attempt.answers) ? attempt.answers : [];
 
       const totalMarks = Number.isFinite(Number(attempt.totalMarks))
@@ -239,10 +238,9 @@ class ExcelService {
         { wch: 10 },
       ];
 
-      // Excel sheet name max 31 chars
-      const sheetNameRaw =
-        attempt.studentUSN || attempt.studentName || `Student${Math.random()}`;
-      const sheetName = String(sheetNameRaw).substring(0, 31);
+      const rawName =
+        attempt.studentUSN || attempt.studentName || `Student${i + 1}`;
+      const sheetName = String(rawName).substring(0, 31); // Excel sheet name limit
 
       XLSX.utils.book_append_sheet(wb, wsStudent, sheetName);
     });

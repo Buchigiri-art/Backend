@@ -1,12 +1,11 @@
 // backend/routes/quiz.js
 const express = require('express');
 const crypto = require('crypto');
-// const ExcelJS = require('exceljs'); // ❌ no longer needed
 const Quiz = require('../models/Quiz');
 const QuizAttempt = require('../models/QuizAttempt');
 const Student = require('../models/Student');
 const emailService = require('../services/emailService');
-const excelService = require('../services/excelService');
+const excelService = require('../services/excelService'); // ✅ XLSX-based service
 const { protect } = require('../middleware/auth');
 
 const router = express.Router();
@@ -23,7 +22,6 @@ router.get('/results/all', protect, async (req, res) => {
   try {
     const teacherId = req.user._id;
 
-    // 1) Get quizzes for this teacher
     const quizzes = await Quiz.find({ userId: teacherId })
       .sort('-createdAt')
       .lean();
@@ -34,7 +32,6 @@ router.get('/results/all', protect, async (req, res) => {
 
     const quizIds = quizzes.map((q) => q._id);
 
-    // 2) Aggregate attempts once for all quizzes (no N+1 queries)
     const stats = await QuizAttempt.aggregate([
       {
         $match: {
@@ -228,18 +225,13 @@ router.get('/:id/results/download', protect, async (req, res) => {
     let buffer;
 
     if (detailed) {
-      // Detailed report: summary + first 10 students with per-question breakdown
       buffer = excelService.generateDetailedQuizResultsExcel(
         quiz.title || 'Quiz',
         quiz,
         attempts,
       );
     } else {
-      // Simple summary report (one sheet)
-      buffer = excelService.generateQuizResultsExcel(
-        quiz.title || 'Quiz',
-        attempts,
-      );
+      buffer = excelService.generateQuizResultsExcel(quiz.title || 'Quiz', attempts);
     }
 
     const safeTitle = (quiz.title || 'quiz')
@@ -296,12 +288,7 @@ router.post('/save', protect, async (req, res) => {
 
 /**
  * POST /api/quiz/share
- * Body: { quizId: string, studentEmails: string[], forceResend?: boolean }
- *
- * Optimized:
- * - Generates/updates QuizAttempt + tokens synchronously
- * - Returns links immediately
- * - Sends emails in the background (non-blocking for frontend)
+ * Optimized share (same as you had, sending emails in background)
  */
 router.post('/share', protect, async (req, res) => {
   try {
@@ -332,7 +319,6 @@ router.post('/share', protect, async (req, res) => {
     );
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-    // Normalise and dedupe emails
     const normalisedEmails = Array.from(
       new Set(
         studentEmails
@@ -348,7 +334,6 @@ router.post('/share', protect, async (req, res) => {
       });
     }
 
-    // Pre-load students for all emails
     const students = await Student.find({
       userId: req.user._id,
       email: { $in: normalisedEmails },
@@ -359,7 +344,6 @@ router.post('/share', protect, async (req, res) => {
       studentMap.set(String(s.email).toLowerCase(), s);
     });
 
-    // Pre-load existing attempts for all these emails
     const attempts = await QuizAttempt.find({
       quizId,
       studentEmail: { $in: normalisedEmails },
@@ -370,10 +354,10 @@ router.post('/share', protect, async (req, res) => {
       attemptMap.set(String(a.studentEmail || '').toLowerCase(), a);
     });
 
-    const sentLinks = [];      // Links we return immediately
-    const alreadySent = [];    // For attempts already emailed and not forceResend
-    const invalid = [];        // Invalid emails / attempt creation errors
-    const backgroundJobs = []; // Emails to send in background
+    const sentLinks = [];
+    const alreadySent = [];
+    const invalid = [];
+    const backgroundJobs = [];
 
     for (const rawEmail of studentEmails) {
       const email = String(rawEmail || '').trim().toLowerCase();
@@ -386,9 +370,7 @@ router.post('/share', protect, async (req, res) => {
       const student = studentMap.get(email) || null;
       let attempt = attemptMap.get(email) || null;
 
-      // 1) Existing attempt handling
       if (attempt) {
-        // If already sent and NOT forcing resend → reuse existing token/link
         if (attempt.emailSent && !forceResend) {
           const link = `${frontendBase}/quiz/attempt/${attempt.uniqueToken}`;
           alreadySent.push({
@@ -402,7 +384,6 @@ router.post('/share', protect, async (req, res) => {
 
         let needsUpdate = false;
 
-        // Backfill from Student
         if (student) {
           if (!attempt.studentName && student.name) {
             attempt.studentName = student.name;
@@ -426,7 +407,6 @@ router.post('/share', protect, async (req, res) => {
           }
         }
 
-        // If forcing resend: generate NEW token
         if (forceResend) {
           attempt.uniqueToken = crypto.randomBytes(32).toString('hex');
           attempt.emailSent = false;
@@ -439,7 +419,6 @@ router.post('/share', protect, async (req, res) => {
         }
       }
 
-      // 2) Create attempt if missing
       if (!attempt) {
         const token = crypto.randomBytes(32).toString('hex');
         const maxMarks = Array.isArray(quiz.questions)
@@ -477,14 +456,12 @@ router.post('/share', protect, async (req, res) => {
 
       const uniqueLink = `${frontendBase}/quiz/attempt/${attempt.uniqueToken}`;
 
-      // Add to response links immediately
       sentLinks.push({
         email,
         link: uniqueLink,
         token: attempt.uniqueToken,
       });
 
-      // Schedule email sending in the background
       backgroundJobs.push({
         attemptId: attempt._id,
         email,
@@ -492,7 +469,6 @@ router.post('/share', protect, async (req, res) => {
       });
     }
 
-    // Fire-and-forget background email sending (does not affect HTTP response time)
     (async () => {
       for (const job of backgroundJobs) {
         try {
@@ -530,10 +506,9 @@ router.post('/share', protect, async (req, res) => {
       links: sentLinks,
       alreadySent,
       invalid,
-      failed: [], // failures are now logged server-side only
+      failed: [],
     };
 
-    // Always 200 for valid request, even if no emails are actually sent
     return res.status(200).json(response);
   } catch (err) {
     console.error('POST /quiz/share error:', err);
