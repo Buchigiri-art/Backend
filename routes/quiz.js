@@ -6,7 +6,7 @@ const Quiz = require('../models/Quiz');
 const QuizAttempt = require('../models/QuizAttempt');
 const Student = require('../models/Student');
 const emailService = require('../services/emailService');
-const excelService = require('../services/excelService'); // ✅ use XLSX-based service
+const excelService = require('../services/excelService');
 const { protect } = require('../middleware/auth');
 
 const router = express.Router();

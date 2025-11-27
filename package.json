@@ -25,7 +25,8 @@
     "mongoose": "^8.0.3",
     "nodemailer": "^6.9.4",
     "validator": "^13.11.0",
-    "winston": "^3.18.3"
+    "winston": "^3.18.3",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
