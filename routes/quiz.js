@@ -307,9 +307,9 @@ router.get('/:id/results/download', protect, async (req, res) => {
     );
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
 
-    // 🔥 Instead of streaming to res, generate a buffer and send it
-    const buffer = await workbook.xlsx.writeBuffer();
-    return res.send(Buffer.from(buffer));
+    // ✅ Stream workbook directly to response (works reliably in Node)
+    await workbook.xlsx.write(res);
+    res.end();
   } catch (err) {
     console.error('GET /quiz/:id/results/download error:', err);
     if (!res.headersSent) {
