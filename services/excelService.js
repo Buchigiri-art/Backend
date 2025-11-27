@@ -1,15 +1,16 @@
 // backend/services/excelService.js
-const XLSX = require('xlsx');
+
+// Handle both CJS and ESM builds of xlsx
+let XLSXLib = require('xlsx');
+const XLSX = XLSXLib && XLSXLib.default ? XLSXLib.default : XLSXLib;
 
 class ExcelService {
-  // Helper to safely get a Node Buffer from a workbook
-  _workbookToBuffer(wb) {
+  // Helper: workbook → Node Buffer
+  _workbookToBuffer(workbook) {
     // Write workbook as binary string
-    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'binary' });
-
-    // Convert binary string to Node Buffer
-    const buf = Buffer.from(wbout, 'binary');
-    return buf;
+    const wbout = XLSX.write(workbook, { bookType: 'xlsx', type: 'binary' });
+    // Convert binary string to Buffer
+    return Buffer.from(wbout, 'binary');
   }
 
   generateQuizResultsExcel(quizTitle, attempts) {
@@ -80,7 +81,6 @@ class ExcelService {
 
       const maxScore = Math.max(...totalMarksArr);
       const minScore = Math.min(...totalMarksArr);
-
       const passCount = percentageArr.filter((p) => p >= 40).length;
 
       wsData.push([]);
@@ -99,22 +99,22 @@ class ExcelService {
     const ws = XLSX.utils.aoa_to_sheet(wsData);
 
     ws['!cols'] = [
-      { wch: 20 },
-      { wch: 15 },
-      { wch: 25 },
-      { wch: 15 },
-      { wch: 10 },
-      { wch: 10 },
-      { wch: 12 },
-      { wch: 12 },
-      { wch: 15 },
-      { wch: 12 },
-      { wch: 20 },
+      { wch: 20 }, // Name
+      { wch: 15 }, // USN
+      { wch: 25 }, // Email
+      { wch: 15 }, // Branch
+      { wch: 10 }, // Year
+      { wch: 10 }, // Semester
+      { wch: 12 }, // Total Marks
+      { wch: 12 }, // Max Marks
+      { wch: 15 }, // Percentage
+      { wch: 12 }, // Status
+      { wch: 20 }, // Submitted At
     ];
 
     XLSX.utils.book_append_sheet(wb, ws, 'Results');
 
-    // ✅ return a real Node Buffer
+    // ✅ Return Buffer
     return this._workbookToBuffer(wb);
   }
 
@@ -213,10 +213,7 @@ class ExcelService {
         ['Year:', attempt.studentYear || ''],
         ['Semester:', attempt.studentSemester || ''],
         [],
-        [
-          'Score:',
-          `${totalMarks}/${maxMarks} (${percentage.toFixed(2)}%)`,
-        ],
+        ['Score:', `${totalMarks}/${maxMarks} (${percentage.toFixed(2)}%)`],
         [],
         ['Question', 'Type', 'Student Answer', 'Correct Answer', 'Result', 'Marks'],
       ];
@@ -250,7 +247,7 @@ class ExcelService {
       XLSX.utils.book_append_sheet(wb, wsStudent, sheetName);
     });
 
-    // ✅ return a real Node Buffer
+    // ✅ Return Buffer
     return this._workbookToBuffer(wb);
   }
 }
