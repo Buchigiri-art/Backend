@@ -1,7 +1,7 @@
 // backend/routes/quiz.js
 const express = require('express');
 const crypto = require('crypto');
-const ExcelJS = require('exceljs'); // ✅ use ExcelJS directly
+const ExcelJS = require('exceljs');
 const Quiz = require('../models/Quiz');
 const QuizAttempt = require('../models/QuizAttempt');
 const Student = require('../models/Student');
@@ -87,120 +87,6 @@ router.get('/results/all', protect, async (req, res) => {
 });
 
 /**
- * GET /api/quiz/:id/results/:attemptId
- * Get a single student's attempt with all answers (teacher only)
- */
-router.get('/:id/results/:attemptId', protect, async (req, res) => {
-  try {
-    const { id: quizId, attemptId } = req.params;
-
-    const attempt = await QuizAttempt.findOne({
-      _id: attemptId,
-      quizId,
-      teacherId: req.user._id,
-    }).lean();
-
-    if (!attempt) {
-      return res.status(404).json({ success: false, message: 'Attempt not found' });
-    }
-
-    const questions = (attempt.answers || []).map((a) => {
-      const options = Array.isArray(a.options) ? a.options : [];
-      const studentAnswer = a.studentAnswer || '';
-      const correctAnswer = a.correctAnswer || '';
-
-      const selectedOptionIndex = options.length ? options.indexOf(studentAnswer) : -1;
-      const correctOptionIndex = options.length ? options.indexOf(correctAnswer) : -1;
-
-      return {
-        _id: a.questionId || undefined,
-        questionText: a.question || '',
-        type: a.type || 'short-answer',
-        options,
-        studentAnswer,
-        correctAnswer,
-        isCorrect: !!a.isCorrect,
-        marks: a.marks ?? 0,
-        explanation: a.explanation || '',
-        selectedOptionIndex,
-        correctOptionIndex,
-      };
-    });
-
-    const response = {
-      _id: attempt._id,
-      quizId: attempt.quizId,
-      teacherId: attempt.teacherId,
-      studentName: attempt.studentName,
-      studentUSN: attempt.studentUSN,
-      studentEmail: attempt.studentEmail,
-      studentBranch: attempt.studentBranch,
-      studentYear: attempt.studentYear,
-      studentSemester: attempt.studentSemester,
-      totalMarks: attempt.totalMarks,
-      maxMarks: attempt.maxMarks,
-      percentage: attempt.percentage,
-      status: attempt.status,
-      submittedAt: attempt.submittedAt,
-      startedAt: attempt.startedAt,
-      gradedAt: attempt.gradedAt,
-      questions,
-    };
-
-    return res.json({ success: true, attempt: response });
-  } catch (error) {
-    console.error(
-      `GET /quiz/${req.params.id}/results/${req.params.attemptId} error:`,
-      error,
-    );
-    res.status(500).json({
-      success: false,
-      message: error.message || 'Failed to fetch attempt detail',
-    });
-  }
-});
-
-/**
- * GET /api/quiz/:id/results
- * Get quiz and attempts (teacher only)
- */
-router.get('/:id/results', protect, async (req, res) => {
-  try {
-    const quizId = req.params.id;
-    const teacherId = req.user._id;
-
-    const quiz = await Quiz.findOne({ _id: quizId, userId: teacherId })
-      .select('title description questions')
-      .lean();
-
-    if (!quiz) {
-      return res.status(404).json({ message: 'Quiz not found' });
-    }
-
-    const attempts = await QuizAttempt.find({
-      quizId,
-      teacherId,
-    })
-      .sort('-submittedAt')
-      .lean();
-
-    res.json({
-      success: true,
-      quiz: {
-        id: quiz._id,
-        title: quiz.title,
-        description: quiz.description,
-        numQuestions: Array.isArray(quiz.questions) ? quiz.questions.length : 0,
-      },
-      attempts,
-    });
-  } catch (error) {
-    console.error(`GET /quiz/${req.params.id}/results error:`, error);
-    res.status(500).json({ message: error.message || 'Failed to fetch attempts' });
-  }
-});
-
-/**
  * Small helper for safe numeric conversion
  */
 function toNumber(value, fallback = 0) {
@@ -211,6 +97,9 @@ function toNumber(value, fallback = 0) {
 /**
  * GET /api/quiz/:id/results/download
  * Summary or detailed Excel export using ExcelJS
+ *
+ * IMPORTANT: this route MUST be defined BEFORE `/:id/results/:attemptId`
+ * so that "/download" is not treated as an attemptId.
  */
 router.get('/:id/results/download', protect, async (req, res) => {
   try {
@@ -254,6 +143,7 @@ router.get('/:id/results/download', protect, async (req, res) => {
       { header: 'Submitted At', key: 'submittedAt', width: 22 },
     ];
 
+    // If detailed, add columns per question (Q1, Q2, ...)
     if (detailed && Array.isArray(quiz.questions) && quiz.questions.length > 0) {
       quiz.questions.forEach((q, idx) => {
         header.push({
@@ -307,9 +197,8 @@ router.get('/:id/results/download', protect, async (req, res) => {
     );
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
 
-    // ✅ Stream workbook directly to response (works reliably in Node)
-    await workbook.xlsx.write(res);
-    res.end();
+    const buffer = await workbook.xlsx.writeBuffer();
+    return res.send(Buffer.from(buffer));
   } catch (err) {
     console.error('GET /quiz/:id/results/download error:', err);
     if (!res.headersSent) {
@@ -319,6 +208,127 @@ router.get('/:id/results/download', protect, async (req, res) => {
     }
   }
 });
+
+/**
+ * GET /api/quiz/:id/results
+ * Get quiz and attempts (teacher only)
+ */
+router.get('/:id/results', protect, async (req, res) => {
+  try {
+    const quizId = req.params.id;
+    const teacherId = req.user._id;
+
+    const quiz = await Quiz.findOne({ _id: quizId, userId: teacherId })
+      .select('title description questions')
+      .lean();
+
+    if (!quiz) {
+      return res.status(404).json({ message: 'Quiz not found' });
+    }
+
+    const attempts = await QuizAttempt.find({
+      quizId,
+      teacherId,
+    })
+      .sort('-submittedAt')
+      .lean();
+
+    res.json({
+      success: true,
+      quiz: {
+        id: quiz._id,
+        title: quiz.title,
+        description: quiz.description,
+        numQuestions: Array.isArray(quiz.questions) ? quiz.questions.length : 0,
+      },
+      attempts,
+    });
+  } catch (error) {
+    console.error(`GET /quiz/${req.params.id}/results error:`, error);
+    res.status(500).json({ message: error.message || 'Failed to fetch attempts' });
+  }
+});
+
+/**
+ * GET /api/quiz/:id/results/:attemptId
+ * Get a single student's attempt with all answers (teacher only)
+ *
+ * NOTE: attemptId is constrained to a 24-char hex ObjectId
+ * so "/download" will NOT match this route anymore.
+ */
+router.get(
+  '/:id/results/:attemptId([0-9a-fA-F]{24})',
+  protect,
+  async (req, res) => {
+    try {
+      const { id: quizId, attemptId } = req.params;
+
+      const attempt = await QuizAttempt.findOne({
+        _id: attemptId,
+        quizId,
+        teacherId: req.user._id,
+      }).lean();
+
+      if (!attempt) {
+        return res.status(404).json({ success: false, message: 'Attempt not found' });
+      }
+
+      const questions = (attempt.answers || []).map((a) => {
+        const options = Array.isArray(a.options) ? a.options : [];
+        const studentAnswer = a.studentAnswer || '';
+        const correctAnswer = a.correctAnswer || '';
+
+        const selectedOptionIndex = options.length ? options.indexOf(studentAnswer) : -1;
+        const correctOptionIndex = options.length ? options.indexOf(correctAnswer) : -1;
+
+        return {
+          _id: a.questionId || undefined,
+          questionText: a.question || '',
+          type: a.type || 'short-answer',
+          options,
+          studentAnswer,
+          correctAnswer,
+          isCorrect: !!a.isCorrect,
+          marks: a.marks ?? 0,
+          explanation: a.explanation || '',
+          selectedOptionIndex,
+          correctOptionIndex,
+        };
+      });
+
+      const response = {
+        _id: attempt._id,
+        quizId: attempt.quizId,
+        teacherId: attempt.teacherId,
+        studentName: attempt.studentName,
+        studentUSN: attempt.studentUSN,
+        studentEmail: attempt.studentEmail,
+        studentBranch: attempt.studentBranch,
+        studentYear: attempt.studentYear,
+        studentSemester: attempt.studentSemester,
+        totalMarks: attempt.totalMarks,
+        maxMarks: attempt.maxMarks,
+        percentage: attempt.percentage,
+        status: attempt.status,
+        submittedAt: attempt.submittedAt,
+        startedAt: attempt.startedAt,
+        gradedAt: attempt.gradedAt,
+        questions,
+      };
+
+      return res.json({ success: true, attempt: response });
+    } catch (error) {
+      console.error(
+        `GET /quiz/${req.params.id}/results/${req.params.attemptId} error:`,
+        error,
+      );
+      res.status(500).json({
+        success: false,
+        message: error.message || 'Failed to fetch attempt detail',
+      });
+    }
+  },
+);
 
 /**
  * GET /api/quiz/all
