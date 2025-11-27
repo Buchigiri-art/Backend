@@ -23,25 +23,23 @@ class EmailService {
     this.transporter = null;
     this.initializeTransporter();
 
-    // Rate limiting
+    // Rate limiting (no longer affects HTTP latency because we send in background)
     this.rateLimit = {
       lastCall: 0,
       minInterval: 100, // ms between emails to avoid being flagged as spam
-      queue: [],
-      processing: false
     };
 
     // Monitoring
     this.metrics = {
       totalSent: 0,
       failedAttempts: 0,
-      lastError: null
+      lastError: null,
     };
 
     console.log('EmailService initialized:', {
       brevo: !!this.brevoApiKey,
       smtp: this.useSmtpFallback,
-      sender: `${this.defaultFromName} <${this.defaultFromEmail}>`
+      sender: `${this.defaultFromName} <${this.defaultFromEmail}>`,
     });
   }
 
@@ -58,18 +56,17 @@ class EmailService {
         secure: this.smtpSecure,
         auth: {
           user: this.smtpUser,
-          pass: this.smtpPass
+          pass: this.smtpPass,
         },
-        pool: true, // Use connection pooling
+        pool: true,
         maxConnections: 5,
         maxMessages: 100,
         rateDelta: 1000,
-        rateLimit: 10, // Max 10 emails per second
+        rateLimit: 10,
         logger: process.env.NODE_ENV === 'development',
-        debug: process.env.NODE_ENV === 'development'
+        debug: process.env.NODE_ENV === 'development',
       });
 
-      // Handle transporter errors
       this.transporter.on('error', (error) => {
         console.error('SMTP Transporter Error:', error);
         this.metrics.lastError = error.message;
@@ -77,40 +74,36 @@ class EmailService {
     }
   }
 
-  // Parses "Name <email@domain.com>" or "email@domain.com" into {name, email}
   _parseFrom(raw) {
     if (!raw) {
       return { name: 'Quiz System', email: 'no-reply@example.com' };
     }
 
     const s = String(raw).trim().replace(/^"(.*)"$/, '$1');
-    
-    // Match "Name <email@domain.com>" format
+
     const angleMatch = s.match(/^(.*)<\s*([^>]+)\s*>$/);
     if (angleMatch) {
       const name = (angleMatch[1] || '').replace(/["']/g, '').trim();
       const email = (angleMatch[2] || '').trim();
       return {
         name: name || 'Quiz System',
-        email: this._validateEmail(email) ? email : 'no-reply@example.com'
+        email: this._validateEmail(email) ? email : 'no-reply@example.com',
       };
     }
 
-    // Extract email from string
     const emailMatch = s.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
     if (emailMatch && this._validateEmail(emailMatch[1])) {
       const email = emailMatch[1];
       const namePart = s.replace(email, '').replace(/[<>"]/g, '').trim();
       return {
         name: namePart || 'Quiz System',
-        email
+        email,
       };
     }
 
-    // Final fallback
     return {
       name: 'Quiz System',
-      email: this._validateEmail(s) ? s : 'no-reply@example.com'
+      email: this._validateEmail(s) ? s : 'no-reply@example.com',
     };
   }
 
@@ -287,13 +280,13 @@ class EmailService {
   async _rateLimit() {
     const now = Date.now();
     const timeSinceLastCall = now - this.rateLimit.lastCall;
-    
+
     if (timeSinceLastCall < this.rateLimit.minInterval) {
-      await new Promise(resolve => 
-        setTimeout(resolve, this.rateLimit.minInterval - timeSinceLastCall)
+      await new Promise((resolve) =>
+        setTimeout(resolve, this.rateLimit.minInterval - timeSinceLastCall),
       );
     }
-    
+
     this.rateLimit.lastCall = Date.now();
   }
 
@@ -312,18 +305,20 @@ class EmailService {
     const payload = {
       sender: {
         name: senderName,
-        email: this.defaultFromEmail
+        email: this.defaultFromEmail,
       },
-      to: [{
-        email: studentEmail,
-        name: studentEmail.split('@')[0] // Use username as display name
-      }],
+      to: [
+        {
+          email: studentEmail,
+          name: studentEmail.split('@')[0],
+        },
+      ],
       subject: `Quiz Invitation: ${quizTitle}`,
       htmlContent,
       tags: ['quiz-invitation'],
       headers: {
-        'X-Mailer': 'Quiz-System/1.0'
-      }
+        'X-Mailer': 'Quiz-System/1.0',
+      },
     };
 
     try {
@@ -331,28 +326,28 @@ class EmailService {
         headers: {
           'api-key': this.brevoApiKey,
           'Content-Type': 'application/json',
-          'Accept': 'application/json'
+          Accept: 'application/json',
         },
-        timeout: 15000 // 15 second timeout
+        timeout: 15000,
       });
 
       const data = response?.data || {};
       this.metrics.totalSent++;
-      
+
       return {
         success: true,
         messageId: data.messageId,
         provider: 'brevo',
-        raw: data
+        raw: data,
       };
     } catch (error) {
       this.metrics.failedAttempts++;
-      
+
       const errorDetails = error.response?.data || error.message;
       console.error('Brevo API Error:', {
         email: studentEmail,
         error: errorDetails,
-        status: error.response?.status
+        status: error.response?.status,
       });
 
       throw new Error(`Brevo API: ${JSON.stringify(errorDetails)}`);
@@ -378,33 +373,32 @@ class EmailService {
       html: htmlContent,
       headers: {
         'X-Mailer': 'Quiz-System/1.0',
-        'X-Auto-Response-Suppress': 'OOF, AutoReply'
-      }
+        'X-Auto-Response-Suppress': 'OOF, AutoReply',
+      },
     };
 
     try {
       const info = await this.transporter.sendMail(mailOptions);
       this.metrics.totalSent++;
-      
+
       console.log(`SMTP Email sent to ${studentEmail}: ${info.messageId}`);
-      
+
       return {
         success: true,
         messageId: info.messageId,
         provider: 'smtp',
-        raw: info
+        raw: info,
       };
     } catch (error) {
       this.metrics.failedAttempts++;
       this.metrics.lastError = error.message;
-      
+
       console.error(`SMTP Send Error to ${studentEmail}:`, error.message);
       throw new Error(`SMTP: ${error.message}`);
     }
   }
 
   async sendQuizInvitation(studentEmail, quizTitle, uniqueLink, teacherName) {
-    // Input validation
     if (!studentEmail || !this._validateEmail(studentEmail)) {
       throw new Error('Valid studentEmail is required');
     }
@@ -417,37 +411,50 @@ class EmailService {
       throw new Error('uniqueLink is required');
     }
 
-    // Apply rate limiting
     await this._rateLimit();
 
     const startTime = Date.now();
-    let result;
 
     try {
-      // Try Brevo first if available
       if (this.brevoApiKey) {
         try {
-          result = await this._sendViaBrevo(studentEmail, quizTitle, uniqueLink, teacherName);
+          const result = await this._sendViaBrevo(
+            studentEmail,
+            quizTitle,
+            uniqueLink,
+            teacherName,
+          );
           return result;
         } catch (brevoError) {
-          console.warn(`Brevo failed for ${studentEmail}, trying SMTP fallback:`, brevoError.message);
-          
+          console.warn(
+            `Brevo failed for ${studentEmail}, trying SMTP fallback:`,
+            brevoError.message,
+          );
+
           if (this.useSmtpFallback && this.transporter) {
-            result = await this._sendViaSmtp(studentEmail, quizTitle, uniqueLink, teacherName);
+            const result = await this._sendViaSmtp(
+              studentEmail,
+              quizTitle,
+              uniqueLink,
+              teacherName,
+            );
             return result;
           }
           throw brevoError;
         }
       }
 
-      // Try SMTP if Brevo not available
       if (this.useSmtpFallback && this.transporter) {
-        result = await this._sendViaSmtp(studentEmail, quizTitle, uniqueLink, teacherName);
+        const result = await this._sendViaSmtp(
+          studentEmail,
+          quizTitle,
+          uniqueLink,
+          teacherName,
+        );
         return result;
       }
 
       throw new Error('No email sending method configured');
-
     } finally {
       const duration = Date.now() - startTime;
       console.log(`Email send attempt completed in ${duration}ms for ${studentEmail}`);
@@ -462,37 +469,35 @@ class EmailService {
     const results = {
       successful: [],
       failed: [],
-      total: emails.length
+      total: emails.length,
     };
 
-    // Process emails in batches to avoid overwhelming the email service
     const batchSize = 10;
     for (let i = 0; i < emails.length; i += batchSize) {
       const batch = emails.slice(i, i + batchSize);
-      const batchPromises = batch.map(email => 
+      const batchPromises = batch.map((email) =>
         this.sendQuizInvitation(email, quizTitle, uniqueLink, teacherName)
-          .then(result => ({ email, success: true, result }))
-          .catch(error => ({ email, success: false, error: error.message }))
+          .then((result) => ({ email, success: true, result }))
+          .catch((error) => ({ email, success: false, error: error.message })),
       );
 
       const batchResults = await Promise.allSettled(batchPromises);
-      
-      batchResults.forEach(result => {
-        if (result.status === 'fulfilled') {
-          const { email, success, result: res, error } = result.value;
+
+      batchResults.forEach((r) => {
+        if (r.status === 'fulfilled') {
+          const { email, success, result, error } = r.value;
           if (success) {
-            results.successful.push({ email, result: res });
+            results.successful.push({ email, result });
           } else {
             results.failed.push({ email, error });
           }
         } else {
-          results.failed.push({ email: 'unknown', error: result.reason });
+          results.failed.push({ email: 'unknown', error: r.reason });
         }
       });
 
-      // Small delay between batches
       if (i + batchSize < emails.length) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     }
 
@@ -503,18 +508,17 @@ class EmailService {
     const results = {
       brevo: false,
       smtp: false,
-      errors: []
+      errors: [],
     };
 
-    // Test Brevo connection
     if (this.brevoApiKey) {
       try {
         const response = await axios.get('https://api.brevo.com/v3/account', {
           headers: {
             'api-key': this.brevoApiKey,
-            'Accept': 'application/json'
+            Accept: 'application/json',
           },
-          timeout: 10000
+          timeout: 10000,
         });
 
         if (response.status === 200) {
@@ -530,7 +534,6 @@ class EmailService {
       }
     }
 
-    // Test SMTP connection
     if (this.transporter) {
       try {
         await this.transporter.verify();
@@ -553,11 +556,10 @@ class EmailService {
     return {
       ...this.metrics,
       uptime: process.uptime(),
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     };
   }
 
-  // Graceful shutdown
   async close() {
     if (this.transporter) {
       this.transporter.close();
@@ -566,10 +568,8 @@ class EmailService {
   }
 }
 
-// Create singleton instance
 const emailService = new EmailService();
 
-// Handle graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received, closing email service...');
   await emailService.close();

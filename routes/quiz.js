@@ -47,11 +47,7 @@ router.get('/results/all', protect, async (req, res) => {
           attemptCount: { $sum: 1 },
           submittedCount: {
             $sum: {
-              $cond: [
-                { $in: ['$status', ['submitted', 'graded']] },
-                1,
-                0,
-              ],
+              $cond: [{ $in: ['$status', ['submitted', 'graded']] }, 1, 0],
             },
           },
           totalPercentage: {
@@ -63,10 +59,7 @@ router.get('/results/all', protect, async (req, res) => {
 
     const statsMap = new Map();
     stats.forEach((s) => {
-      const avg =
-        s.submittedCount > 0
-          ? s.totalPercentage / s.submittedCount
-          : 0;
+      const avg = s.submittedCount > 0 ? s.totalPercentage / s.submittedCount : 0;
       statsMap.set(String(s._id), {
         attemptCount: s.attemptCount,
         submittedCount: s.submittedCount,
@@ -91,9 +84,7 @@ router.get('/results/all', protect, async (req, res) => {
     res.json(quizzesWithStats);
   } catch (error) {
     console.error('GET /quiz/results/all error:', error);
-    res
-      .status(500)
-      .json({ message: error.message || 'Failed to fetch results' });
+    res.status(500).json({ message: error.message || 'Failed to fetch results' });
   }
 });
 
@@ -112,9 +103,7 @@ router.get('/:id/results/:attemptId', protect, async (req, res) => {
     }).lean();
 
     if (!attempt) {
-      return res
-        .status(404)
-        .json({ success: false, message: 'Attempt not found' });
+      return res.status(404).json({ success: false, message: 'Attempt not found' });
     }
 
     const questions = (attempt.answers || []).map((a) => {
@@ -122,12 +111,8 @@ router.get('/:id/results/:attemptId', protect, async (req, res) => {
       const studentAnswer = a.studentAnswer || '';
       const correctAnswer = a.correctAnswer || '';
 
-      const selectedOptionIndex = options.length
-        ? options.indexOf(studentAnswer)
-        : -1;
-      const correctOptionIndex = options.length
-        ? options.indexOf(correctAnswer)
-        : -1;
+      const selectedOptionIndex = options.length ? options.indexOf(studentAnswer) : -1;
+      const correctOptionIndex = options.length ? options.indexOf(correctAnswer) : -1;
 
       return {
         _id: a.questionId || undefined,
@@ -168,7 +153,7 @@ router.get('/:id/results/:attemptId', protect, async (req, res) => {
   } catch (error) {
     console.error(
       `GET /quiz/${req.params.id}/results/${req.params.attemptId} error:`,
-      error
+      error,
     );
     res.status(500).json({
       success: false,
@@ -207,17 +192,13 @@ router.get('/:id/results', protect, async (req, res) => {
         id: quiz._id,
         title: quiz.title,
         description: quiz.description,
-        numQuestions: Array.isArray(quiz.questions)
-          ? quiz.questions.length
-          : 0,
+        numQuestions: Array.isArray(quiz.questions) ? quiz.questions.length : 0,
       },
       attempts,
     });
   } catch (error) {
     console.error(`GET /quiz/${req.params.id}/results error:`, error);
-    res
-      .status(500)
-      .json({ message: error.message || 'Failed to fetch attempts' });
+    res.status(500).json({ message: error.message || 'Failed to fetch attempts' });
   }
 });
 
@@ -228,8 +209,7 @@ router.get('/:id/results/download', protect, async (req, res) => {
   try {
     const quizId = req.params.id;
     const teacherId = req.user._id;
-    const detailed =
-      String(req.query.detailed || 'false').toLowerCase() === 'true';
+    const detailed = String(req.query.detailed || 'false').toLowerCase() === 'true';
 
     const quiz = await Quiz.findOne({ _id: quizId, userId: teacherId }).lean();
     if (!quiz) {
@@ -260,11 +240,7 @@ router.get('/:id/results/download', protect, async (req, res) => {
       { header: 'Submitted At', key: 'submittedAt', width: 22 },
     ];
 
-    if (
-      detailed &&
-      Array.isArray(quiz.questions) &&
-      quiz.questions.length > 0
-    ) {
+    if (detailed && Array.isArray(quiz.questions) && quiz.questions.length > 0) {
       quiz.questions.forEach((q, idx) => {
         header.push({
           header: `Q${idx + 1}`,
@@ -285,17 +261,10 @@ router.get('/:id/results/download', protect, async (req, res) => {
         studentYear: a.studentYear || '',
         studentSemester: a.studentSemester || '',
         totalMarks:
-          a.totalMarks !== undefined && a.totalMarks !== null
-            ? a.totalMarks
-            : '',
-        maxMarks:
-          a.maxMarks !== undefined && a.maxMarks !== null
-            ? a.maxMarks
-            : '',
+          a.totalMarks !== undefined && a.totalMarks !== null ? a.totalMarks : '',
+        maxMarks: a.maxMarks !== undefined && a.maxMarks !== null ? a.maxMarks : '',
         percentage:
-          a.percentage !== undefined && a.percentage !== null
-            ? a.percentage
-            : '',
+          a.percentage !== undefined && a.percentage !== null ? a.percentage : '',
         status: a.status || '',
         submittedAt: a.submittedAt
           ? new Date(a.submittedAt).toLocaleString()
@@ -304,10 +273,7 @@ router.get('/:id/results/download', protect, async (req, res) => {
 
       if (detailed && Array.isArray(a.answers)) {
         for (let i = 0; i < quiz.questions.length; i++) {
-          const ans =
-            a.answers && a.answers[i]
-              ? a.answers[i].studentAnswer
-              : '';
+          const ans = a.answers && a.answers[i] ? a.answers[i].studentAnswer : '';
           row[`q_${i + 1}`] = ans;
         }
       }
@@ -315,29 +281,20 @@ router.get('/:id/results/download', protect, async (req, res) => {
       sheet.addRow(row);
     }
 
-    const safeTitle = (quiz.title || 'quiz')
-      .replace(/[^a-z0-9]/gi, '_')
-      .toLowerCase();
-    const filename = `${safeTitle}_results${
-      detailed ? '_detailed' : ''
-    }.xlsx`;
+    const safeTitle = (quiz.title || 'quiz').replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    const filename = `${safeTitle}_results${detailed ? '_detailed' : ''}.xlsx`;
 
     res.setHeader(
       'Content-Type',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     );
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="${filename}"`
-    );
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
 
     await workbook.xlsx.write(res);
     res.end();
   } catch (err) {
     console.error('GET /quiz/:id/results/download error:', err);
-    return res
-      .status(500)
-      .json({ message: err.message || 'Failed to generate Excel' });
+    return res.status(500).json({ message: err.message || 'Failed to generate Excel' });
   }
 });
 
@@ -354,9 +311,7 @@ router.get('/all', protect, async (req, res) => {
     return res.json(quizzes);
   } catch (err) {
     console.error('GET /quiz/all error:', err);
-    return res
-      .status(500)
-      .json({ message: err.message || 'Failed to fetch quizzes' });
+    return res.status(500).json({ message: err.message || 'Failed to fetch quizzes' });
   }
 });
 
@@ -371,9 +326,7 @@ router.post('/save', protect, async (req, res) => {
     return res.status(201).json({ success: true, quizId: quiz._id, quiz });
   } catch (err) {
     console.error('POST /quiz/save error:', err);
-    return res
-      .status(400)
-      .json({ message: err.message || 'Failed to save quiz' });
+    return res.status(400).json({ message: err.message || 'Failed to save quiz' });
   }
 });
 
@@ -381,8 +334,10 @@ router.post('/save', protect, async (req, res) => {
  * POST /api/quiz/share
  * Body: { quizId: string, studentEmails: string[], forceResend?: boolean }
  *
- * - If forceResend = true → always generate NEW token + send NEW email
- * - If forceResend = false/undefined → keep old "alreadySent" behavior
+ * Optimized:
+ * - Generates/updates QuizAttempt + tokens synchronously
+ * - Returns links immediately
+ * - Sends emails in the background (non-blocking for frontend)
  */
 router.post('/share', protect, async (req, res) => {
   try {
@@ -407,9 +362,10 @@ router.post('/share', protect, async (req, res) => {
         .json({ success: false, message: 'Quiz not found' });
     }
 
-    const frontendBase = (process.env.FRONTEND_URL ||
-      'http://localhost:5173'
-    ).replace(/\/$/, '');
+    const frontendBase = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(
+      /\/$/,
+      '',
+    );
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
     // Normalise and dedupe emails
@@ -417,8 +373,8 @@ router.post('/share', protect, async (req, res) => {
       new Set(
         studentEmails
           .map((raw) => String(raw || '').trim().toLowerCase())
-          .filter(Boolean)
-      )
+          .filter(Boolean),
+      ),
     );
 
     if (normalisedEmails.length === 0) {
@@ -450,15 +406,10 @@ router.post('/share', protect, async (req, res) => {
       attemptMap.set(String(a.studentEmail || '').toLowerCase(), a);
     });
 
-    const emailReady = await emailService.verifyConnection().catch(() => false);
-    if (!emailReady) {
-      console.warn('Email service not verified; emails may fail.');
-    }
-
-    const sent = [];
-    const failed = [];
-    const invalid = [];
-    const alreadySent = [];
+    const sentLinks = [];      // Links we return immediately
+    const alreadySent = [];    // For attempts already emailed and not forceResend
+    const invalid = [];        // Invalid emails / attempt creation errors
+    const backgroundJobs = []; // Emails to send in background
 
     for (const rawEmail of studentEmails) {
       const email = String(rawEmail || '').trim().toLowerCase();
@@ -473,20 +424,22 @@ router.post('/share', protect, async (req, res) => {
 
       // 1) Existing attempt handling
       if (attempt) {
-        // Old behavior: if already sent and NOT forcing resend → just report alreadySent
+        // If already sent and NOT forcing resend → reuse existing token/link
         if (attempt.emailSent && !forceResend) {
+          const link = `${frontendBase}/quiz/attempt/${attempt.uniqueToken}`;
           alreadySent.push({
             email,
-            link: `${frontendBase}/quiz/attempt/${attempt.uniqueToken}`,
+            link,
             token: attempt.uniqueToken,
           });
+          sentLinks.push({ email, link, token: attempt.uniqueToken });
           continue;
         }
 
+        let needsUpdate = false;
+
         // Backfill from Student
         if (student) {
-          let needsUpdate = false;
-
           if (!attempt.studentName && student.name) {
             attempt.studentName = student.name;
             needsUpdate = true;
@@ -507,23 +460,17 @@ router.post('/share', protect, async (req, res) => {
             attempt.studentSemester = student.semester;
             needsUpdate = true;
           }
+        }
 
-          // If forcing resend: generate NEW token
-          if (forceResend) {
-            attempt.uniqueToken = crypto.randomBytes(32).toString('hex');
-            attempt.emailSent = false;
-            attempt.sentAt = null;
-            needsUpdate = true;
-          }
-
-          if (needsUpdate) {
-            await attempt.save();
-          }
-        } else if (forceResend) {
-          // No student record, but still force new token
+        // If forcing resend: generate NEW token
+        if (forceResend) {
           attempt.uniqueToken = crypto.randomBytes(32).toString('hex');
           attempt.emailSent = false;
           attempt.sentAt = null;
+          needsUpdate = true;
+        }
+
+        if (needsUpdate) {
           await attempt.save();
         }
       }
@@ -532,10 +479,7 @@ router.post('/share', protect, async (req, res) => {
       if (!attempt) {
         const token = crypto.randomBytes(32).toString('hex');
         const maxMarks = Array.isArray(quiz.questions)
-          ? quiz.questions.reduce(
-              (s, q) => s + (q.marks ?? 1),
-              0
-            )
+          ? quiz.questions.reduce((s, q) => s + (q.marks ?? 1), 0)
           : 0;
 
         attempt = new QuizAttempt({
@@ -559,7 +503,7 @@ router.post('/share', protect, async (req, res) => {
           attemptMap.set(email, attempt);
         } catch (saveErr) {
           console.error(`Failed to create QuizAttempt for ${email}:`, saveErr);
-          failed.push({
+          invalid.push({
             email,
             reason: `Failed to create attempt: ${saveErr.message}`,
           });
@@ -567,47 +511,65 @@ router.post('/share', protect, async (req, res) => {
         }
       }
 
-      // 3) Send email with current token
       const uniqueLink = `${frontendBase}/quiz/attempt/${attempt.uniqueToken}`;
 
-      try {
-        const sendRes = await emailService.sendQuizInvitation(
-          email,
-          quiz.title || 'Untitled Quiz',
-          uniqueLink,
-          req.user.name || 'Teacher'
-        );
+      // Add to response links immediately
+      sentLinks.push({
+        email,
+        link: uniqueLink,
+        token: attempt.uniqueToken,
+      });
 
-        if (sendRes && sendRes.success) {
-          attempt.emailSent = true;
-          attempt.sentAt = new Date();
-          await attempt.save();
-
-          sent.push({ email, link: uniqueLink, token: attempt.uniqueToken });
-        } else {
-          const reason =
-            (sendRes && (sendRes.error || sendRes.message)) ||
-            'Unknown send error';
-          failed.push({ email, reason });
-          console.error(`Failed to send to ${email}:`, reason);
-        }
-      } catch (err) {
-        const reason = err && err.message ? err.message : String(err);
-        failed.push({ email, reason });
-        console.error(`Exception sending to ${email}:`, reason);
-      }
+      // Schedule email sending in the background
+      backgroundJobs.push({
+        attemptId: attempt._id,
+        email,
+        uniqueLink,
+      });
     }
+
+    // Fire-and-forget background email sending (does not affect HTTP response time)
+    (async () => {
+      for (const job of backgroundJobs) {
+        try {
+          const attempt = await QuizAttempt.findById(job.attemptId);
+          if (!attempt) continue;
+
+          const sendRes = await emailService.sendQuizInvitation(
+            job.email,
+            quiz.title || 'Untitled Quiz',
+            job.uniqueLink,
+            req.user.name || 'Teacher',
+          );
+
+          if (sendRes && sendRes.success) {
+            attempt.emailSent = true;
+            attempt.sentAt = new Date();
+            await attempt.save();
+          } else {
+            console.error(`Failed to send quiz email to ${job.email}:`, sendRes);
+          }
+        } catch (err) {
+          console.error(
+            `Error sending quiz email in background for ${job.email}:`,
+            err.message || err,
+          );
+        }
+      }
+    })().catch((err) => {
+      console.error('Background email sending error:', err);
+    });
 
     const response = {
       success: true,
-      message: `Quiz links sent to ${sent.length} student(s)`,
-      links: sent,
+      message: `Quiz links generated for ${sentLinks.length} student(s). Emails are being sent in the background.`,
+      links: sentLinks,
       alreadySent,
-      failed,
       invalid,
+      failed: [], // failures are now logged server-side only
     };
 
-    // Always 200 for valid request, even if sent.length === 0
+    // Always 200 for valid request, even if no emails are actually sent
     return res.status(200).json(response);
   } catch (err) {
     console.error('POST /quiz/share error:', err);
