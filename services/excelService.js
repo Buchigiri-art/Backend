@@ -2,11 +2,20 @@
 const XLSX = require('xlsx');
 
 class ExcelService {
+  // Helper to safely get a Node Buffer from a workbook
+  _workbookToBuffer(wb) {
+    // Write workbook as binary string
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'binary' });
+
+    // Convert binary string to Node Buffer
+    const buf = Buffer.from(wbout, 'binary');
+    return buf;
+  }
+
   generateQuizResultsExcel(quizTitle, attempts) {
     const safeTitle = quizTitle || 'Quiz';
     const safeAttempts = Array.isArray(attempts) ? attempts : [];
 
-    // Header / meta info
     const wsData = [
       ['Quiz Results Report'],
       ['Quiz Title:', safeTitle],
@@ -28,7 +37,6 @@ class ExcelService {
       ],
     ];
 
-    // Student rows
     safeAttempts.forEach((attempt) => {
       const totalMarks = Number.isFinite(Number(attempt.totalMarks))
         ? Number(attempt.totalMarks)
@@ -57,7 +65,6 @@ class ExcelService {
       ]);
     });
 
-    // Statistics
     if (safeAttempts.length > 0) {
       const totalMarksArr = safeAttempts.map((a) =>
         Number.isFinite(Number(a.totalMarks)) ? Number(a.totalMarks) : 0,
@@ -91,25 +98,24 @@ class ExcelService {
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet(wsData);
 
-    // Column widths
     ws['!cols'] = [
-      { wch: 20 }, // Name
-      { wch: 15 }, // USN
-      { wch: 25 }, // Email
-      { wch: 15 }, // Branch
-      { wch: 10 }, // Year
-      { wch: 10 }, // Semester
-      { wch: 12 }, // Total Marks
-      { wch: 12 }, // Max Marks
-      { wch: 15 }, // Percentage
-      { wch: 12 }, // Status
-      { wch: 20 }, // Submitted At
+      { wch: 20 },
+      { wch: 15 },
+      { wch: 25 },
+      { wch: 15 },
+      { wch: 10 },
+      { wch: 10 },
+      { wch: 12 },
+      { wch: 12 },
+      { wch: 15 },
+      { wch: 12 },
+      { wch: 20 },
     ];
 
     XLSX.utils.book_append_sheet(wb, ws, 'Results');
 
-    const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-    return excelBuffer;
+    // ✅ return a real Node Buffer
+    return this._workbookToBuffer(wb);
   }
 
   generateDetailedQuizResultsExcel(quizTitle, quiz, attempts) {
@@ -123,7 +129,6 @@ class ExcelService {
 
     const wb = XLSX.utils.book_new();
 
-    // Summary sheet
     const summaryData = [
       ['Quiz Results - Detailed Report'],
       ['Quiz Title:', safeTitle],
@@ -185,7 +190,7 @@ class ExcelService {
     ];
     XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
 
-    // Individual student sheets (limit to first 10 for performance)
+    // Individual student sheets (limit to first 10)
     safeAttempts.slice(0, 10).forEach((attempt, i) => {
       const answers = Array.isArray(attempt.answers) ? attempt.answers : [];
 
@@ -240,13 +245,13 @@ class ExcelService {
 
       const rawName =
         attempt.studentUSN || attempt.studentName || `Student${i + 1}`;
-      const sheetName = String(rawName).substring(0, 31); // Excel sheet name limit
+      const sheetName = String(rawName).substring(0, 31);
 
       XLSX.utils.book_append_sheet(wb, wsStudent, sheetName);
     });
 
-    const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-    return excelBuffer;
+    // ✅ return a real Node Buffer
+    return this._workbookToBuffer(wb);
   }
 }
 
