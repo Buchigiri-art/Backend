@@ -1,18 +1,7 @@
 // backend/services/excelService.js
-
-// Handle both CJS and ESM builds of xlsx
-let XLSXLib = require('xlsx');
-const XLSX = XLSXLib && XLSXLib.default ? XLSXLib.default : XLSXLib;
+const XLSX = require('xlsx');
 
 class ExcelService {
-  // Helper: workbook → Node Buffer
-  _workbookToBuffer(workbook) {
-    // Write workbook as binary string
-    const wbout = XLSX.write(workbook, { bookType: 'xlsx', type: 'binary' });
-    // Convert binary string to Buffer
-    return Buffer.from(wbout, 'binary');
-  }
-
   generateQuizResultsExcel(quizTitle, attempts) {
     const safeTitle = quizTitle || 'Quiz';
     const safeAttempts = Array.isArray(attempts) ? attempts : [];
@@ -66,6 +55,7 @@ class ExcelService {
       ]);
     });
 
+    // Basic stats
     if (safeAttempts.length > 0) {
       const totalMarksArr = safeAttempts.map((a) =>
         Number.isFinite(Number(a.totalMarks)) ? Number(a.totalMarks) : 0,
@@ -114,8 +104,9 @@ class ExcelService {
 
     XLSX.utils.book_append_sheet(wb, ws, 'Results');
 
-    // ✅ Return Buffer
-    return this._workbookToBuffer(wb);
+    // ✅ Node-friendly Buffer
+    const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' });
+    return buffer;
   }
 
   generateDetailedQuizResultsExcel(quizTitle, quiz, attempts) {
@@ -129,6 +120,7 @@ class ExcelService {
 
     const wb = XLSX.utils.book_new();
 
+    // Summary sheet
     const summaryData = [
       ['Quiz Results - Detailed Report'],
       ['Quiz Title:', safeTitle],
@@ -190,7 +182,7 @@ class ExcelService {
     ];
     XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
 
-    // Individual student sheets (limit to first 10)
+    // Per-student sheets (limit to 10)
     safeAttempts.slice(0, 10).forEach((attempt, i) => {
       const answers = Array.isArray(attempt.answers) ? attempt.answers : [];
 
@@ -247,8 +239,8 @@ class ExcelService {
       XLSX.utils.book_append_sheet(wb, wsStudent, sheetName);
     });
 
-    // ✅ Return Buffer
-    return this._workbookToBuffer(wb);
+    const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' });
+    return buffer;
   }
 }
 
