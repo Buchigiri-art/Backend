@@ -11,6 +11,11 @@ const { createIndexes } = require('./config/dbIndexes');
 const app = express();
 
 /* -----------------------------------------------------
+   TRUST PROXY (so we see real client IP behind proxy)
+------------------------------------------------------ */
+app.set('trust proxy', true);
+
+/* -----------------------------------------------------
    CORS SETUP (supports multiple URLs)
 ------------------------------------------------------ */
 const rawFrontendUrls =
@@ -64,10 +69,10 @@ mongoose
   .catch((err) => console.error('❌ MongoDB connection error:', err));
 
 /* -----------------------------------------------------
-   ROUTE IMPORTS (Direct, no try/catch needed)
+   ROUTE IMPORTS
 ------------------------------------------------------ */
 const authRoutes = require('./routes/auth');
-const quizRoutes = require('./routes/quiz'); // <-- Now contains fixed ordering!
+const quizRoutes = require('./routes/quiz');
 const folderRoutes = require('./routes/folder');
 const bookmarkRoutes = require('./routes/bookmark');
 const studentRoutes = require('./routes/student');

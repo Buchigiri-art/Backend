@@ -1,15 +1,83 @@
 // routes/studentQuiz.js
 const express = require('express');
+const axios = require('axios');
 const Quiz = require('../models/Quiz');
 const QuizAttempt = require('../models/QuizAttempt');
 const Student = require('../models/Student');
 
 const router = express.Router();
 
+/* ---------------------------------------------------
+   VPN / PROXY / TOR DETECTION (ipapi.is – FREE TIER)
+---------------------------------------------------- */
+
+// env flags
+const VPN_STRICT_BLOCK =
+  (process.env.VPN_STRICT_BLOCK || 'false').toLowerCase() === 'true';
+
+const IPAPI_API_KEY = process.env.IPAPI_API_KEY || '';
+const IPAPI_ENDPOINT = process.env.IPAPI_API_URL || 'https://api.ipapi.is';
+
 /**
- * GET /api/student-quiz/attempt/:token
- * Loads quiz + attempt + student details from Student collection
+ * Extract client IP from request (supports reverse proxy)
  */
+function getClientIp(req) {
+  // If behind proxy (and trust proxy enabled in server.js)
+  const xff = req.headers['x-forwarded-for'];
+  if (xff) {
+    // "client, proxy1, proxy2" → take first
+    return xff.split(',')[0].trim();
+  }
+
+  const realIp = req.headers['x-real-ip'];
+  if (realIp) return realIp;
+
+  // fallback
+  if (req.ip) {
+    return req.ip.replace('::ffff:', '');
+  }
+
+  return null;
+}
+
+/**
+ * Check if given IP looks like VPN / Proxy / Tor using ipapi.is
+ * - Free tier: 1000 requests/day, no billing required.
+ * - Works with or without API key (key just makes it more stable).
+ */
+async function checkVpnForIp(ip) {
+  if (!ip) return { enabled: false };
+
+  try {
+    let url = `${IPAPI_ENDPOINT}?q=${encodeURIComponent(ip)}`;
+    if (IPAPI_API_KEY) {
+      url += `&key=${encodeURIComponent(IPAPI_API_KEY)}`;
+    }
+
+    const { data } = await axios.get(url, { timeout: 3000 });
+
+    // ipapi.is returns booleans like: is_vpn, is_proxy, is_tor
+    const isVpn = !!data.is_vpn;
+    const isProxy = !!data.is_proxy;
+    const isTor = !!data.is_tor;
+
+    return {
+      enabled: true,
+      isVpn,
+      isProxy,
+      isTor,
+    };
+  } catch (err) {
+    console.warn('VPN check failed for IP', ip, '-', err.message || err);
+    // on failure we just don't block based on VPN
+    return { enabled: false };
+  }
+}
+
+/* ---------------------------------------------------
+   GET /api/student-quiz/attempt/:token
+   Loads quiz + attempt + student details
+---------------------------------------------------- */
 router.get('/attempt/:token', async (req, res) => {
   try {
     const { token } = req.params;
@@ -34,7 +102,7 @@ router.get('/attempt/:token', async (req, res) => {
     if (!quiz) return res.status(404).json({ message: 'Quiz not found' });
 
     // -----------------------------------------
-    // ⭐ Fetch Student details from DB
+    // Fetch Student details from DB
     // -----------------------------------------
     let studentInfo = null;
 
@@ -97,9 +165,10 @@ router.get('/attempt/:token', async (req, res) => {
   }
 });
 
-/**
- * POST /api/student-quiz/attempt/start
- */
+/* ---------------------------------------------------
+   POST /api/student-quiz/attempt/start
+   -> HERE WE BLOCK WHEN VPN/PROXY/TOR IS ON
+---------------------------------------------------- */
 router.post('/attempt/start', async (req, res) => {
   try {
     const {
@@ -129,7 +198,43 @@ router.post('/attempt/start', async (req, res) => {
       return res.status(400).json({ message: 'Quiz already submitted' });
     }
 
-    // Update attempt
+    // ---------------- VPN BLOCK LOGIC ----------------
+    if (VPN_STRICT_BLOCK) {
+      const clientIp = getClientIp(req);
+
+      // ignore localhost for dev, otherwise check VPN
+      const isLocal =
+        !clientIp ||
+        clientIp === '127.0.0.1' ||
+        clientIp === '::1' ||
+        clientIp === '::ffff:127.0.0.1';
+
+      if (!isLocal) {
+        const vpnInfo = await checkVpnForIp(clientIp);
+
+        if (
+          vpnInfo.enabled &&
+          (vpnInfo.isVpn || vpnInfo.isProxy || vpnInfo.isTor)
+        ) {
+          // log cheat reason but DO NOT mark as started
+          attempt.cheatLogs = attempt.cheatLogs || [];
+          attempt.cheatLogs.push({
+            at: new Date(),
+            reason: 'vpn-blocked-start',
+          });
+          await attempt.save();
+
+          return res.status(403).json({
+            vpnBlocked: true,
+            message:
+              'VPN / proxy / Tor connection detected. Please turn it off and reload the quiz link to start.',
+          });
+        }
+      }
+    }
+    // -------------- END VPN BLOCK LOGIC --------------
+
+    // Update attempt (only if no VPN/proxy detection)
     attempt.studentName = studentName;
     attempt.studentUSN = studentUSN;
     attempt.studentBranch = studentBranch;
@@ -164,9 +269,9 @@ router.post('/attempt/start', async (req, res) => {
   }
 });
 
-/**
- * POST /api/student-quiz/attempt/flag
- */
+/* ---------------------------------------------------
+   POST /api/student-quiz/attempt/flag
+---------------------------------------------------- */
 router.post('/attempt/flag', async (req, res) => {
   try {
     const { token, reason } = req.body;
@@ -224,9 +329,9 @@ router.post('/attempt/flag', async (req, res) => {
   }
 });
 
-/**
- * POST /api/student-quiz/attempt/submit
- */
+/* ---------------------------------------------------
+   POST /api/student-quiz/attempt/submit
+---------------------------------------------------- */
 router.post('/attempt/submit', async (req, res) => {
   try {
     const { attemptId, answers } = req.body;

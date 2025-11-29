@@ -23,6 +23,7 @@
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.0.3",
+    "node-fetch": "^3.3.2",
     "nodemailer": "^6.9.4",
     "validator": "^13.11.0",
     "winston": "^3.18.3",
