@@ -178,6 +178,9 @@ router.post('/attempt/start', async (req, res) => {
       studentBranch,
       studentYear,
       studentSemester,
+      // NEW: capture device info from frontend
+      deviceType,
+      userAgent,
     } = req.body;
 
     if (
@@ -241,6 +244,14 @@ router.post('/attempt/start', async (req, res) => {
     attempt.studentYear = studentYear;
     attempt.studentSemester = studentSemester;
 
+    // NEW: store device info on attempt
+    if (deviceType) {
+      attempt.deviceType = String(deviceType).toLowerCase();
+    }
+    if (userAgent) {
+      attempt.userAgent = String(userAgent);
+    }
+
     attempt.status = 'started';
     attempt.startedAt = new Date();
     await attempt.save();
@@ -289,17 +300,25 @@ router.post('/attempt/flag', async (req, res) => {
     attempt.lastWarningAt = new Date();
     attempt.cheatLogs = attempt.cheatLogs || [];
 
+    const finalReason = reason || 'violation';
+
     attempt.cheatLogs.push({
       at: new Date(),
-      reason: reason || 'violation',
+      reason: finalReason,
     });
 
-    const threshold = 4;
+    // store last cheat reason explicitly for easy display
+    attempt.cheatReason = finalReason;
+
+    // Threshold of warnings before auto-block
+    // Align with frontend MAX_WARNINGS = 3
+    const threshold = 3;
     let autoSubmitted = false;
 
     if (attempt.warningCount >= threshold) {
       attempt.isCheated = true;
-      attempt.status = 'submitted';
+      // mark as blocked/cheated; status text can be customized
+      attempt.status = 'submitted'; // keep basic workflow; frontend will show "Blocked / Cheated"
       attempt.submittedAt = new Date();
       attempt.gradedAt = new Date();
 
@@ -344,7 +363,28 @@ router.post('/attempt/submit', async (req, res) => {
     if (!attempt) return res.status(404).json({ message: 'Attempt not found' });
 
     if (['submitted', 'graded'].includes(attempt.status)) {
-      return res.status(400).json({ message: 'Attempt already submitted' });
+      // If already submitted and marked cheated, just return stored results
+      return res.json({
+        success: true,
+        results: {
+          totalMarks: attempt.totalMarks || 0,
+          maxMarks: attempt.maxMarks || 0,
+          percentage: attempt.percentage || 0,
+        },
+      });
+    }
+
+    // If attempt already marked as cheated by /attempt/flag, do NOT re-grade.
+    // Just return existing 0 marks / percentage.
+    if (attempt.isCheated) {
+      return res.json({
+        success: true,
+        results: {
+          totalMarks: attempt.totalMarks || 0,
+          maxMarks: attempt.maxMarks || 0,
+          percentage: attempt.percentage || 0,
+        },
+      });
     }
 
     const quiz = attempt.quizId;

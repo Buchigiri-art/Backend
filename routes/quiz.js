@@ -139,7 +139,7 @@ router.get('/:id/results/download', protect, async (req, res) => {
       { header: 'Total Marks', key: 'totalMarks', width: 14 },
       { header: 'Max Marks', key: 'maxMarks', width: 12 },
       { header: 'Percentage', key: 'percentage', width: 12 },
-      { header: 'Status', key: 'status', width: 12 },
+      { header: 'Status', key: 'status', width: 20 },
       { header: 'Submitted At', key: 'submittedAt', width: 22 },
     ];
 
@@ -167,7 +167,8 @@ router.get('/:id/results/download', protect, async (req, res) => {
         totalMarks: toNumber(a.totalMarks, ''),
         maxMarks: toNumber(a.maxMarks, ''),
         percentage: toNumber(a.percentage, ''),
-        status: a.status || '',
+        // show blocked/cheated clearly in Excel too
+        status: a.isCheated ? 'Blocked / Cheated' : (a.status || ''),
         submittedAt: a.submittedAt
           ? new Date(a.submittedAt).toLocaleString()
           : '',
@@ -241,6 +242,7 @@ router.get('/:id/results', protect, async (req, res) => {
         description: quiz.description,
         numQuestions: Array.isArray(quiz.questions) ? quiz.questions.length : 0,
       },
+      // attempts are sent as-is, including isCheated, warningCount, deviceType, userAgent, cheatLogs, etc.
       attempts,
     });
   } catch (error) {
@@ -296,6 +298,15 @@ router.get(
         };
       });
 
+      // derive cheatReason from explicit field or last cheat log
+      let derivedCheatReason;
+      if (attempt.cheatReason) {
+        derivedCheatReason = attempt.cheatReason;
+      } else if (Array.isArray(attempt.cheatLogs) && attempt.cheatLogs.length > 0) {
+        const lastLog = attempt.cheatLogs[attempt.cheatLogs.length - 1];
+        derivedCheatReason = lastLog?.reason;
+      }
+
       const response = {
         _id: attempt._id,
         quizId: attempt.quizId,
@@ -314,6 +325,13 @@ router.get(
         startedAt: attempt.startedAt,
         gradedAt: attempt.gradedAt,
         questions,
+
+        // extra cheat / device info for UI
+        isCheated: !!attempt.isCheated,
+        warningCount: attempt.warningCount || 0,
+        cheatReason: derivedCheatReason || undefined,
+        deviceType: attempt.deviceType || undefined,
+        userAgent: attempt.userAgent || undefined,
       };
 
       return res.json({ success: true, attempt: response });
